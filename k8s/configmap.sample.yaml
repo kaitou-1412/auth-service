@@ -1,0 +1,36 @@
+# Sample ConfigMap - Copy this to configmap.yaml and fill in real values
+# This file is committed to git as a template
+# The actual configmap.yaml is gitignored (contains real secrets)
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auth-service-config
+  namespace: default
+data:
+  # Application port
+  PORT: "8080"
+
+  # Database credentials - SINGLE SOURCE OF TRUTH
+  # IMPORTANT: Change these values in your local configmap.yaml
+  POSTGRES_DB: "your_database_name"
+  POSTGRES_USER: "your_database_user"
+  POSTGRES_PASSWORD: "your_secure_password_here"  # TODO: Move to Secrets for production
+
+  # Database connection details for application
+  DATABASE_HOST: "auth-db"
+  DATABASE_PORT: "5432"
+  DATABASE_NAME: "your_database_name"  # Should match POSTGRES_DB
+  DATABASE_USER: "your_database_user"  # Should match POSTGRES_USER
+  DATABASE_PASSWORD: "your_secure_password_here"  # Should match POSTGRES_PASSWORD
+
+  # Other environment variables
+  # LOG_LEVEL: "info"
+  # JWT_SECRET: "your_jwt_secret_here"
+  # API_KEY: "your_api_key_here"
+
+# Setup Instructions:
+# 1. Copy this file: cp k8s/configmap.sample.yaml k8s/configmap.yaml
+# 2. Edit k8s/configmap.yaml with your actual values
+# 3. Apply: kubectl apply -f k8s/configmap.yaml
+# 4. Never commit k8s/configmap.yaml (it's in .gitignore)

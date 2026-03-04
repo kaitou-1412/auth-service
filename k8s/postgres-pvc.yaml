@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: default
+  labels:
+    app: auth-db
+spec:
+  accessModes:
+    - ReadWriteOnce  # Can be mounted by single node
+  resources:
+    requests:
+      storage: 256Mi  # 256MB - sufficient for local development
+  # storageClassName: standard  # Uncomment if you need specific storage class

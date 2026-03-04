@@ -1,0 +1,16 @@
+# IDE
+.vscode/
+
+# Environment files
+.env
+*.env
+
+# Build artifacts
+/server
+
+# Kubernetes secrets (use configmap.sample.yaml instead)
+k8s/configmap.yaml
+
+# TODO file (contains implementation-specific details)
+TODO.md
+CONTEXT.md

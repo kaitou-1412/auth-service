@@ -1,0 +1,31 @@
+# Git files
+.git
+.gitignore
+
+# IDE files
+.vscode
+.idea
+
+# Environment files (secrets should not be in image)
+.env
+*.env
+
+# Build artifacts
+server
+*.exe
+*.out
+
+# Kubernetes manifests (not needed in container)
+k8s/
+*.yaml
+*.yml
+
+# Documentation
+README.md
+CONTEXT.md
+
+# Test files
+*_test.go
+
+# Dependencies (will be downloaded during build)
+vendor/

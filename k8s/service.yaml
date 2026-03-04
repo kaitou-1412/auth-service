@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-service
+  namespace: default
+  labels:
+    app: auth-service
+spec:
+  # Service type:
+  # - ClusterIP: Only accessible within cluster (default)
+  # - NodePort: Accessible from outside via node IP:port
+  # - LoadBalancer: Creates external load balancer (cloud providers)
+  type: ClusterIP
+
+  # Select pods with this label
+  selector:
+    app: auth-service
+
+  # Port configuration
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80           # Service port (what other services use to connect)
+    targetPort: 8080   # Container port (where your app listens)
+
+  # Session affinity (optional)
+  # sessionAffinity: ClientIP  # Stick clients to same pod

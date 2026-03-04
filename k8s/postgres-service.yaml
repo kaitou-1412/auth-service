@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-db
+  namespace: default
+  labels:
+    app: auth-db
+spec:
+  type: ClusterIP  # Internal only - not exposed outside cluster
+  selector:
+    app: auth-db
+  ports:
+  - name: postgres
+    protocol: TCP
+    port: 5432        # Service port
+    targetPort: 5432  # Container port

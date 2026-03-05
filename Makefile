@@ -1,6 +1,6 @@
 # Makefile for Auth Service Development
 
-.PHONY: help build load restart deploy dev clean logs status test port-forward port-forward-bg port-forward-db-bg stop-port-forward dev-watch describe shell db-shell minikube-status minikube-dashboard
+.PHONY: help build restart deploy dev clean logs status test unit-test coverage port-forward port-forward-bg port-forward-db-bg stop-port-forward dev-watch describe shell db-shell minikube-status minikube-dashboard
 
 # Variables
 IMAGE_NAME := auth-service
@@ -12,15 +12,10 @@ help: ## Show this help message
 	echo ""; \
 	grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-15s\033[0m %s\n", $$1, $$2}'
 
-build: ## Build Docker image
-	@echo "Building Docker image..."; \
-	docker build -t $(FULL_IMAGE) . && \
-	echo "✓ Image built: $(FULL_IMAGE)"
-
-load: ## Load image into minikube
-	@echo "Loading image into minikube..."; \
-	minikube image load $(FULL_IMAGE) && \
-	echo "✓ Image loaded into minikube"
+build: ## Build Docker image directly inside minikube's Docker daemon (no image load needed)
+	@echo "Building Docker image inside minikube..."; \
+	eval $$(minikube docker-env) && docker build -t $(FULL_IMAGE) . && \
+	echo "✓ Image built inside minikube: $(FULL_IMAGE)"
 
 restart: ## Restart auth-service deployment only (not database)
 	@echo "Restarting auth-service deployment..."; \
@@ -29,7 +24,7 @@ restart: ## Restart auth-service deployment only (not database)
 	echo "Waiting for rollout to complete..." && \
 	(kubectl rollout status deployment auth-service || echo "Rollout interrupted or failed")
 
-deploy: build load restart ## Deploy code changes (auth-service only, database keeps running)
+deploy: build restart ## Deploy code changes (build inside minikube + restart)
 	@echo ""; \
 	echo "✓ Deployment complete! (auth-service updated, database unchanged)"; \
 	echo "Run 'make dev-watch' to watch logs and enable port-forwarding"
@@ -48,7 +43,7 @@ apply: ## Apply Kubernetes manifests (first time setup)
 	echo "Waiting for deployment..." && \
 	(kubectl rollout status deployment auth-service || echo "Rollout interrupted or failed")
 
-setup: build load apply ## First time setup: build + load + apply manifests
+setup: build apply ## First time setup: build inside minikube + apply manifests
 	@echo ""; \
 	echo "✓ Setup complete!"; \
 	echo "Run 'make port-forward' to access at localhost:8080"
@@ -80,6 +75,20 @@ status: ## Show deployment status
 test: ## Test the health endpoint
 	@echo "Testing health endpoint..."; \
 	curl -s http://localhost:8080/v1/health || echo "Error: Make sure port-forward is running (make port-forward)"
+
+unit-test: ## Run unit tests
+	@echo "Running unit tests..."; \
+	go test -v ./...
+
+coverage: ## Run unit tests and open HTML coverage report in browser
+	@echo "Running tests with coverage..."; \
+	go test ./... -coverprofile=coverage.out && \
+	go tool cover -html=coverage.out
+
+coverage-cli: ## Run unit tests and browse coverage in terminal (requires: go install github.com/orlangure/gocovsh@latest)
+	@echo "Running tests with coverage..."; \
+	go test ./... -coverprofile=coverage.out && \
+	gocovsh
 
 port-forward: ## Forward service to localhost:8080 (blocking)
 	@echo "Forwarding localhost:8080 -> service:80 -> pods:8080"; \
@@ -147,21 +156,19 @@ stop-port-forward: ## Stop all background port-forwards
 		pkill -f "kubectl port-forward" && echo "✓ Killed port-forward processes" || echo "No processes found"; \
 	fi
 
-dev-watch: ## Start port-forwards and watch logs
+dev-watch: ## Start port-forwards and watch logs (re-run after make deploy to restore port-forwards)
 	@echo "Starting development environment..."; \
 	make -s stop-port-forward 2>/dev/null || true; \
-	make -s port-forward-bg; \
-	AUTH_RESULT=$$?; \
-	make -s port-forward-db-bg; \
-	DB_RESULT=$$?; \
-	if [ $$AUTH_RESULT -eq 0 ] && [ $$DB_RESULT -eq 0 ]; then \
+	make -s port-forward-bg && make -s port-forward-db-bg; \
+	if [ $$? -eq 0 ]; then \
 		echo ""; \
 		echo "=== Live Server Logs (Press Ctrl+C to stop) ==="; \
+		echo "Tip: after 'make deploy', run 'make dev-watch' again to restore port-forwards"; \
 		echo ""; \
 		sleep 1; \
 		kubectl logs -l app=auth-service --tail=50 -f || true; \
 		echo ""; \
-		echo "✓ Dev-watch stopped (logs and port-forwards terminated)"; \
+		echo "✓ Dev-watch stopped"; \
 		echo ""; \
 		echo "To resume:"; \
 		echo "  make dev-watch             # Restart everything"; \

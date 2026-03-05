@@ -1,6 +1,9 @@
 # IDE
 .vscode/
 
+# OS files
+.DS_Store
+
 # Environment files
 .env
 *.env
@@ -8,9 +11,13 @@
 # Build artifacts
 /server
 
+# Test coverage
+coverage.out
+
 # Kubernetes secrets (use configmap.sample.yaml instead)
 k8s/configmap.yaml
 
-# TODO file (contains implementation-specific details)
+# Implementation details file
 TODO.md
+TASKS.md
 CONTEXT.md

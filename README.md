@@ -20,7 +20,7 @@ minikube start
 cp k8s/configmap.sample.yaml k8s/configmap.yaml
 # Edit k8s/configmap.yaml with your values
 
-# 3. Setup (first time only)
+# 3. First time setup (builds image inside minikube + deploys)
 make setup
 
 # 4. Start development
@@ -28,7 +28,9 @@ make dev-watch
 ```
 
 Access:
+
 - **API**: http://localhost:8080
+- **API Docs**: http://localhost:8080/swagger
 - **Database**: localhost:5432
 - **Dashboard**: `make minikube-dashboard`
 
@@ -36,57 +38,56 @@ Access:
 
 ```bash
 # Make code changes
-vim internal/handler/health_handler.go
+vim internal/service/auth_service.go
 
-# Deploy changes (rebuilds only auth-service, DB stays running)
+# Deploy changes (builds inside minikube, restarts auth-service only, DB stays running)
 make deploy
 
-# Watch logs
+# Restore port-forwards and watch logs
 make dev-watch
 ```
 
+> After `make deploy` the pod restarts and port-forwards drop. Re-run `make dev-watch` to restore them.
+
 ## Key Commands
 
-| Command | Description |
-|---------|-------------|
-| `make setup` | First time setup (build + deploy everything) |
-| `make deploy` | Deploy code changes (auth-service only) |
-| `make dev-watch` | Port-forward + live logs |
-| `make status` | Show all resources status |
-| `make logs` | Follow pod logs |
-| `make db-shell` | Open psql shell in database |
-| `make clean` | Delete all resources |
-| `make help` | Show all commands |
+| Command              | Description                                        |
+| -------------------- | -------------------------------------------------- |
+| `make setup`         | First time setup (build inside minikube + deploy)  |
+| `make deploy`        | Build + restart auth-service (DB untouched)        |
+| `make dev-watch`     | Start port-forwards + live logs                    |
+| `make unit-test`     | Run unit tests                                     |
+| `make coverage`      | Run tests and open HTML coverage in browser        |
+| `make coverage-cli`  | Run tests and browse coverage in terminal          |
+| `make status`        | Show all resource statuses                         |
+| `make logs`          | Follow pod logs                                    |
+| `make db-shell`      | Open psql shell in database pod                    |
+| `make clean`         | Delete all Kubernetes resources                    |
+| `make help`          | Show all commands                                  |
 
 ## Project Structure
 
 ```
 .
-├── cmd/server/           # Application entry point
+├── api/
+│   └── openapi.yaml          # OpenAPI 3.0 spec (embedded into binary)
+├── cmd/server/               # Application entry point
 ├── internal/
-│   ├── app/              # Router configuration
-│   └── handler/          # HTTP handlers
-├── k8s/                  # Kubernetes manifests
-│   ├── configmap.yaml    # Configuration (gitignored)
-│   └── *.yaml            # Deployments, services, etc.
-├── Dockerfile            # Multi-stage build
-└── Makefile              # Development commands
+│   ├── app/                  # Router setup
+│   ├── db/
+│   │   ├── store.go          # pgxpool connection
+│   │   ├── migrations/       # goose SQL migrations
+│   │   ├── queries/          # sqlc SQL queries
+│   │   └── sqlc/             # Generated Go DB code
+│   ├── handler/              # HTTP handlers (thin layer)
+│   ├── middleware/           # HTTP middleware (logging)
+│   └── service/              # Business logic
+├── k8s/                      # Kubernetes manifests
+│   ├── configmap.yaml        # Configuration (gitignored)
+│   └── *.yaml                # Deployments, services, etc.
+├── Dockerfile                # Multi-stage build
+└── Makefile                  # Development commands
 ```
-
-## Configuration
-
-All configuration is in `k8s/configmap.yaml`:
-- Application port
-- Database credentials
-- Database connection details
-
-**Note:** `configmap.yaml` is gitignored. Use `configmap.sample.yaml` as template.
-
-## Database
-
-- **Type**: PostgreSQL 18.3
-- **Storage**: 256Mi persistent volume
-- **Connection**: `psql -h localhost -p 5432 -U authuser -d authdb`
 
 ## Architecture
 
@@ -99,13 +100,78 @@ All configuration is in `k8s/configmap.yaml`:
        └─ ConfigMap (env vars)
 ```
 
-## Endpoints
+Request flow:
 
-- `GET /v1/health` - Health check
-- `GET /v1/err` - Error endpoint (testing)
+```
+HTTP Request → Middleware → Handler → Service → DB (sqlc + pgx)
+```
+
+## Configuration
+
+All configuration is in `k8s/configmap.yaml`:
+
+- Application port
+- Database credentials and connection details
+
+**Note:** `configmap.yaml` is gitignored. Use `configmap.sample.yaml` as template.
+
+## Database
+
+- **Type**: PostgreSQL 18.3
+- **Storage**: 256Mi persistent volume
+- **Connection**: `psql -h localhost -p 5432 -U authuser -d authdb`
+
+## API
+
+Full interactive docs available at `http://localhost:8080/swagger` when the service is running.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/health` | Health check |
+| `POST` | `/v1/auth/signup` | Create a new user |
+| `POST` | `/v1/auth/login` | Authenticate user and create session |
+| `POST` | `/v1/auth/logout` | Logout from current session (requires auth) |
+
+## Local Development Tools
+
+### sqlc — SQL to Go code generator
+
+```bash
+go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+sqlc version
+
+# Regenerate Go code after editing queries in internal/db/queries/
+sqlc generate
+```
+
+### goose — Database migrations
+
+```bash
+go install github.com/pressly/goose/v3/cmd/goose@latest
+goose -version
+```
+
+Requires DB port-forward running (`make dev-watch` or `make port-forward-db-bg`):
+
+```bash
+# Run all pending migrations
+goose -dir internal/db/migrations postgres \
+  "host=localhost port=5432 user=authuser password=<password> dbname=authdb sslmode=disable" up
+
+# Roll back the last migration
+goose -dir internal/db/migrations postgres \
+  "host=localhost port=5432 user=authuser password=<password> dbname=authdb sslmode=disable" down
+```
+
+### gocovsh — Terminal coverage browser (optional)
+
+```bash
+go install github.com/orlangure/gocovsh@latest
+make coverage-cli
+```
 
 ## Notes
 
-- Database data persists across pod restarts
-- `make deploy` only restarts auth-service (database keeps running)
-- Port-forwards stop when you exit `dev-watch` (restart with `make dev-watch`)
+- `make deploy` builds the image **inside minikube's Docker daemon** — no `minikube image load` needed
+- Database data persists across pod restarts (PersistentVolume)
+- Port-forwards stop when the pod restarts — re-run `make dev-watch` to restore

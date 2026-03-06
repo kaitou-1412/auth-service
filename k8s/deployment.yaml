@@ -61,6 +61,12 @@ spec:
         - configMapRef:
             name: auth-service-config
 
+        # Mount RSA keys for JWT signing/verification
+        volumeMounts:
+        - name: jwt-keys
+          mountPath: /keys
+          readOnly: true
+
         # Health check: Kubernetes uses this to know if app is ready
         # Uses your /v1/health endpoint
         livenessProbe:
@@ -97,6 +103,12 @@ spec:
           runAsUser: 1000
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
+
+      # Volumes
+      volumes:
+      - name: jwt-keys
+        secret:
+          secretName: jwt-rsa-keys
 
       # Restart policy
       restartPolicy: Always

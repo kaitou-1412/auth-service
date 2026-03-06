@@ -9,6 +9,7 @@ import (
 	"github.com/kaitou-1412/auth-service/internal/app"
 	"github.com/kaitou-1412/auth-service/internal/db"
 	sqlcdb "github.com/kaitou-1412/auth-service/internal/db/sqlc"
+	"github.com/kaitou-1412/auth-service/internal/keyutil"
 )
 
 func main() {
@@ -22,9 +23,24 @@ func main() {
 		os.Exit(1)
 	}
 
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		slog.Error("JWT_SECRET is not set in environment variables")
+	privateKeyPath := os.Getenv("JWT_PRIVATE_KEY_PATH")
+	if privateKeyPath == "" {
+		privateKeyPath = "/keys/private.pem"
+	}
+	publicKeyPath := os.Getenv("JWT_PUBLIC_KEY_PATH")
+	if publicKeyPath == "" {
+		publicKeyPath = "/keys/public.pem"
+	}
+
+	privateKey, err := keyutil.LoadPrivateKey(privateKeyPath)
+	if err != nil {
+		slog.Error("failed to load private key", "error", err)
+		os.Exit(1)
+	}
+
+	publicKey, err := keyutil.LoadPublicKey(publicKeyPath)
+	if err != nil {
+		slog.Error("failed to load public key", "error", err)
 		os.Exit(1)
 	}
 
@@ -38,7 +54,7 @@ func main() {
 	defer pool.Close()
 
 	queries := sqlcdb.New(pool)
-	r := app.NewRouter(queries, jwtSecret)
+	r := app.NewRouter(queries, privateKey, publicKey)
 
 	srv := &http.Server{
 		Handler: r,

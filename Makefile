@@ -1,6 +1,6 @@
 # Makefile for Auth Service Development
 
-.PHONY: help build restart deploy dev clean logs status test unit-test coverage port-forward port-forward-bg port-forward-db-bg stop-port-forward dev-watch describe shell db-shell minikube-status minikube-dashboard
+.PHONY: help build restart deploy dev clean logs status test unit-test coverage port-forward port-forward-bg port-forward-db-bg stop-port-forward dev-watch describe shell db-shell minikube-status minikube-dashboard generate-keys apply-keys sqlc-generate
 
 # Variables
 IMAGE_NAME := auth-service
@@ -24,7 +24,7 @@ restart: ## Restart auth-service deployment only (not database)
 	echo "Waiting for rollout to complete..." && \
 	(kubectl rollout status deployment auth-service || echo "Rollout interrupted or failed")
 
-deploy: build restart ## Deploy code changes (build inside minikube + restart)
+deploy: build apply-keys apply restart ## Deploy code changes (build inside minikube + apply manifests + restart)
 	@echo ""; \
 	echo "✓ Deployment complete! (auth-service updated, database unchanged)"; \
 	echo "Run 'make dev-watch' to watch logs and enable port-forwarding"
@@ -36,6 +36,26 @@ clean: ## Delete all Kubernetes resources
 	kubectl delete -f k8s/ --ignore-not-found=true && \
 	echo "✓ Resources deleted"
 
+generate-keys: ## Generate RSA key pair for JWT signing
+	@echo "Generating RSA key pair..."; \
+	mkdir -p keys && \
+	openssl genpkey -algorithm RSA -out keys/private.pem -pkeyopt rsa_keygen_bits:2048 && \
+	openssl rsa -pubout -in keys/private.pem -out keys/public.pem && \
+	echo "✓ Keys generated in keys/"
+
+apply-keys: ## Create Kubernetes secret from RSA keys
+	@echo "Creating JWT RSA keys secret..."; \
+	kubectl create secret generic jwt-rsa-keys \
+		--from-file=private.pem=keys/private.pem \
+		--from-file=public.pem=keys/public.pem \
+		--dry-run=client -o yaml | kubectl apply -f - && \
+	echo "✓ Secret jwt-rsa-keys applied"
+
+sqlc-generate: ## Run sqlc generate
+	@echo "Running sqlc generate..."; \
+	sqlc generate && \
+	echo "✓ sqlc generated"
+
 apply: ## Apply Kubernetes manifests (first time setup)
 	@echo "Applying Kubernetes manifests..."; \
 	kubectl apply -f k8s/ && \
@@ -43,7 +63,7 @@ apply: ## Apply Kubernetes manifests (first time setup)
 	echo "Waiting for deployment..." && \
 	(kubectl rollout status deployment auth-service || echo "Rollout interrupted or failed")
 
-setup: build apply ## First time setup: build inside minikube + apply manifests
+setup: generate-keys apply-keys build apply ## First time setup: generate keys, create secret, build + apply
 	@echo ""; \
 	echo "✓ Setup complete!"; \
 	echo "Run 'make port-forward' to access at localhost:8080"

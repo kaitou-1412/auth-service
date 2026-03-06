@@ -1,6 +1,8 @@
 package middleware_test
 
 import (
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,12 +13,12 @@ import (
 	"github.com/kaitou-1412/auth-service/internal/middleware"
 )
 
-const testSecret = "test-secret"
+var testKey, _ = rsa.GenerateKey(rand.Reader, 2048)
 
 func signToken(t *testing.T, claims jwt.MapClaims) string {
 	t.Helper()
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	s, err := token.SignedString([]byte(testSecret))
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	s, err := token.SignedString(testKey)
 	if err != nil {
 		t.Fatalf("failed to sign token: %v", err)
 	}
@@ -43,7 +45,7 @@ func TestAuthMiddleware(t *testing.T) {
 		})
 	})
 
-	mw := middleware.AuthMiddleware([]byte(testSecret))
+	mw := middleware.AuthMiddleware(&testKey.PublicKey)
 	handler := mw(nextHandler)
 
 	tests := []struct {

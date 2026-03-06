@@ -17,6 +17,9 @@ type AuthService interface {
 	Signup(ctx context.Context, params service.SignupParams) (db.User, error)
 	Login(ctx context.Context, params service.LoginParams) (service.LoginResult, error)
 	Logout(ctx context.Context, sessionID string) error
+	LogoutAll(ctx context.Context, userID string) error
+	ChangePassword(ctx context.Context, params service.ChangePasswordParams) error
+	RefreshToken(ctx context.Context, rawToken string) (service.RefreshTokenResult, error)
 }
 
 type AuthHandler struct {
@@ -41,10 +44,16 @@ func httpError(w http.ResponseWriter, err error) {
 		RespondWithError(w, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, service.ErrUserNotFound):
 		RespondWithError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, service.ErrAppNotFound):
+		RespondWithError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, service.ErrInvalidAppID),
 		errors.Is(err, service.ErrInvalidUserID),
 		errors.Is(err, service.ErrInvalidSessionID),
-		errors.Is(err, service.ErrInvalidRoleID):
+		errors.Is(err, service.ErrInvalidRoleID),
+		errors.Is(err, service.ErrInvalidEmail),
+		errors.Is(err, service.ErrPasswordLength),
+		errors.Is(err, service.ErrPasswordComplexity),
+		errors.Is(err, service.ErrPasswordLeadingTrailingSpaces):
 		RespondWithError(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, service.ErrSessionUserMismatch):
 		RespondWithError(w, http.StatusForbidden, err.Error())
@@ -158,6 +167,95 @@ func (h *AuthHandler) Signup(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:     user.CreatedAt,
 		UpdatedAt:     user.UpdatedAt,
 	})
+}
+
+type changePasswordRequest struct {
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
+}
+
+func (h *AuthHandler) ChangePassword(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.UserIDFromContext(r.Context())
+	slog.Info("change password request received", "user_id", userID)
+
+	var req changePasswordRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondWithError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.CurrentPassword == "" || req.NewPassword == "" {
+		RespondWithError(w, http.StatusBadRequest, "current_password and new_password are required")
+		return
+	}
+
+	if err := h.svc.ChangePassword(r.Context(), service.ChangePasswordParams{
+		UserID:          userID,
+		CurrentPassword: req.CurrentPassword,
+		NewPassword:     req.NewPassword,
+	}); err != nil {
+		slog.Warn("change password failed", "user_id", userID, "error", err)
+		httpError(w, err)
+		return
+	}
+
+	slog.Info("change password successful", "user_id", userID)
+	RespondWithJSON(w, http.StatusOK, map[string]string{"message": "password changed successfully"})
+}
+
+type refreshTokenRequest struct {
+	RefreshToken string `json:"refresh_token"`
+}
+
+type refreshTokenResponse struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
+	TokenType    string `json:"token_type"`
+}
+
+func (h *AuthHandler) RefreshToken(w http.ResponseWriter, r *http.Request) {
+	slog.Info("refresh token request received")
+
+	var req refreshTokenRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondWithError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.RefreshToken == "" {
+		RespondWithError(w, http.StatusBadRequest, "refresh_token is required")
+		return
+	}
+
+	result, err := h.svc.RefreshToken(r.Context(), req.RefreshToken)
+	if err != nil {
+		slog.Warn("refresh token failed", "error", err)
+		httpError(w, err)
+		return
+	}
+
+	slog.Info("refresh token successful")
+	RespondWithJSON(w, http.StatusOK, refreshTokenResponse{
+		AccessToken:  result.AccessToken,
+		RefreshToken: result.RefreshToken,
+		ExpiresIn:    result.ExpiresIn,
+		TokenType:    result.TokenType,
+	})
+}
+
+func (h *AuthHandler) LogoutAll(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.UserIDFromContext(r.Context())
+	slog.Info("logout-all request received", "user_id", userID)
+
+	if err := h.svc.LogoutAll(r.Context(), userID); err != nil {
+		slog.Warn("logout-all failed", "user_id", userID, "error", err)
+		httpError(w, err)
+		return
+	}
+
+	slog.Info("logout-all successful", "user_id", userID)
+	RespondWithJSON(w, http.StatusOK, map[string]string{"message": "logged out from all devices"})
 }
 
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {

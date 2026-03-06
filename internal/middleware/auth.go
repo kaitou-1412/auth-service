@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -22,7 +23,7 @@ func respondUnauthorized(w http.ResponseWriter, msg string) {
 	json.NewEncoder(w).Encode(map[string]string{"error": msg})
 }
 
-func AuthMiddleware(jwtSecret []byte) func(http.Handler) http.Handler {
+func AuthMiddleware(publicKey *rsa.PublicKey) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
@@ -38,10 +39,10 @@ func AuthMiddleware(jwtSecret []byte) func(http.Handler) http.Handler {
 			}
 
 			token, err := jwt.Parse(parts[1], func(token *jwt.Token) (any, error) {
-				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
 					return nil, jwt.ErrSignatureInvalid
 				}
-				return jwtSecret, nil
+				return publicKey, nil
 			})
 			if err != nil || !token.Valid {
 				respondUnauthorized(w, "invalid or expired token")

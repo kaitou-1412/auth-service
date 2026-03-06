@@ -3,11 +3,15 @@ package service
 import (
 	"context"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"net/mail"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
@@ -17,12 +21,12 @@ import (
 )
 
 type AuthService struct {
-	queries   db.Querier
-	jwtSecret []byte
+	queries    db.Querier
+	privateKey *rsa.PrivateKey
 }
 
-func NewAuthService(queries db.Querier, jwtSecret string) *AuthService {
-	return &AuthService{queries: queries, jwtSecret: []byte(jwtSecret)}
+func NewAuthService(queries db.Querier, privateKey *rsa.PrivateKey) *AuthService {
+	return &AuthService{queries: queries, privateKey: privateKey}
 }
 
 type SignupParams struct {
@@ -37,6 +41,22 @@ func (s *AuthService) Signup(ctx context.Context, params SignupParams) (db.User,
 	var appID pgtype.UUID
 	if err := appID.Scan(params.AppID); err != nil {
 		return db.User{}, ErrInvalidAppID
+	}
+
+	if _, err := s.queries.GetApp(ctx, appID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.User{}, ErrAppNotFound
+		}
+		slog.Error("signup: failed to check app existence", "app_id", params.AppID, "error", err)
+		return db.User{}, err
+	}
+
+	if err := validateEmail(params.Email); err != nil {
+		return db.User{}, err
+	}
+
+	if err := validatePassword(params.Password); err != nil {
+		return db.User{}, err
 	}
 
 	_, err := s.queries.GetUserByAppAndEmail(ctx, db.GetUserByAppAndEmailParams{
@@ -98,6 +118,18 @@ func (s *AuthService) Login(ctx context.Context, params LoginParams) (LoginResul
 	var appID pgtype.UUID
 	if err := appID.Scan(params.AppID); err != nil {
 		return LoginResult{}, ErrInvalidAppID
+	}
+
+	if _, err := s.queries.GetApp(ctx, appID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return LoginResult{}, ErrAppNotFound
+		}
+		slog.Error("login: failed to check app existence", "app_id", params.AppID, "error", err)
+		return LoginResult{}, err
+	}
+
+	if err := validateEmail(params.Email); err != nil {
+		return LoginResult{}, err
 	}
 
 	user, err := s.queries.GetUserByAppAndEmail(ctx, db.GetUserByAppAndEmailParams{
@@ -168,6 +200,105 @@ func (s *AuthService) Login(ctx context.Context, params LoginParams) (LoginResul
 	}, nil
 }
 
+type RefreshTokenResult struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresIn    int
+	TokenType    string
+}
+
+func (s *AuthService) RefreshToken(ctx context.Context, rawToken string) (RefreshTokenResult, error) {
+	slog.Info("token refresh attempt")
+
+	tokenHash := hashToken(rawToken)
+
+	oldToken, err := s.queries.FindRefreshToken(ctx, tokenHash)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("token refresh failed: token not found")
+			return RefreshTokenResult{}, ErrTokenNotFound
+		}
+		slog.Error("token refresh: failed to find token", "error", err)
+		return RefreshTokenResult{}, err
+	}
+
+	session, err := s.queries.VerifySession(ctx, oldToken.SessionID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("token refresh failed: session invalid", "session_id", oldToken.SessionID)
+			return RefreshTokenResult{}, ErrSessionRevoked
+		}
+		slog.Error("token refresh: failed to verify session", "error", err)
+		return RefreshTokenResult{}, err
+	}
+
+	if _, err := s.queries.RevokeRefreshToken(ctx, oldToken.ID); err != nil {
+		slog.Error("token refresh: failed to revoke old token", "error", err)
+		return RefreshTokenResult{}, err
+	}
+
+	now := time.Now()
+
+	newRaw, newHash, err := generateRefreshToken()
+	if err != nil {
+		slog.Error("token refresh: failed to generate new token", "error", err)
+		return RefreshTokenResult{}, err
+	}
+
+	if _, err := s.queries.CreateRefreshToken(ctx, db.CreateRefreshTokenParams{
+		SessionID: session.ID,
+		UserID:    session.UserID,
+		TokenHash: newHash,
+		ExpiresAt: pgtype.Timestamp{Time: now.Add(refreshTokenDuration), Valid: true},
+	}); err != nil {
+		slog.Error("token refresh: failed to create new token", "error", err)
+		return RefreshTokenResult{}, err
+	}
+
+	userIDBytes := uuidToBytes(session.UserID)
+	sessionIDBytes := uuidToBytes(session.ID)
+	accessToken, err := s.generateAccessToken(hex.EncodeToString(userIDBytes), hex.EncodeToString(sessionIDBytes), now)
+	if err != nil {
+		slog.Error("token refresh: failed to generate access token", "error", err)
+		return RefreshTokenResult{}, err
+	}
+
+	slog.Info("token refresh successful", "session_id", session.ID)
+	return RefreshTokenResult{
+		AccessToken:  accessToken,
+		RefreshToken: newRaw,
+		ExpiresIn:    int(accessTokenDuration.Seconds()),
+		TokenType:    "Bearer",
+	}, nil
+}
+
+func hashToken(raw string) string {
+	h := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(h[:])
+}
+
+func (s *AuthService) LogoutAll(ctx context.Context, userID string) error {
+	slog.Info("logout-all attempt", "user_id", userID)
+
+	var uid pgtype.UUID
+	if err := uid.Scan(userID); err != nil {
+		return ErrInvalidUserID
+	}
+
+	if err := s.queries.RevokeAllSessionsForUser(ctx, uid); err != nil {
+		slog.Error("logout-all: failed to revoke sessions", "user_id", userID, "error", err)
+		return err
+	}
+
+	if err := s.queries.RevokeAllRefreshTokensForUser(ctx, uid); err != nil {
+		slog.Error("logout-all: failed to revoke refresh tokens", "user_id", userID, "error", err)
+		return err
+	}
+
+	slog.Info("logout-all successful", "user_id", userID)
+	return nil
+}
+
 func (s *AuthService) Logout(ctx context.Context, sessionID string) error {
 	slog.Info("logout attempt", "session_id", sessionID)
 
@@ -190,6 +321,66 @@ func (s *AuthService) Logout(ctx context.Context, sessionID string) error {
 	return nil
 }
 
+type ChangePasswordParams struct {
+	UserID          string
+	CurrentPassword string
+	NewPassword     string
+}
+
+func (s *AuthService) ChangePassword(ctx context.Context, params ChangePasswordParams) error {
+	slog.Info("change password attempt", "user_id", params.UserID)
+
+	var uid pgtype.UUID
+	if err := uid.Scan(params.UserID); err != nil {
+		return ErrInvalidUserID
+	}
+
+	currentHash, err := s.queries.GetUserPasswordHash(ctx, uid)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrUserNotFound
+		}
+		slog.Error("change password: failed to get password hash", "user_id", params.UserID, "error", err)
+		return err
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(currentHash), []byte(params.CurrentPassword)); err != nil {
+		slog.Warn("change password: wrong current password", "user_id", params.UserID)
+		return ErrInvalidCredentials
+	}
+
+	if err := validatePassword(params.NewPassword); err != nil {
+		return err
+	}
+
+	newHash, err := bcrypt.GenerateFromPassword([]byte(params.NewPassword), bcrypt.DefaultCost)
+	if err != nil {
+		slog.Error("change password: failed to hash new password", "error", err)
+		return err
+	}
+
+	if _, err := s.queries.UpdateUserPasswordHash(ctx, db.UpdateUserPasswordHashParams{
+		ID:           uid,
+		PasswordHash: string(newHash),
+	}); err != nil {
+		slog.Error("change password: failed to update password", "user_id", params.UserID, "error", err)
+		return err
+	}
+
+	if err := s.queries.RevokeAllSessionsForUser(ctx, uid); err != nil {
+		slog.Error("change password: failed to revoke sessions", "user_id", params.UserID, "error", err)
+		return err
+	}
+
+	if err := s.queries.RevokeAllRefreshTokensForUser(ctx, uid); err != nil {
+		slog.Error("change password: failed to revoke refresh tokens", "user_id", params.UserID, "error", err)
+		return err
+	}
+
+	slog.Info("change password successful", "user_id", params.UserID)
+	return nil
+}
+
 func (s *AuthService) generateAccessToken(userID, sessionID string, now time.Time) (string, error) {
 	claims := jwt.MapClaims{
 		"sub":        userID,
@@ -197,8 +388,46 @@ func (s *AuthService) generateAccessToken(userID, sessionID string, now time.Tim
 		"iat":        now.Unix(),
 		"exp":        now.Add(accessTokenDuration).Unix(),
 	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(s.jwtSecret)
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	return token.SignedString(s.privateKey)
+}
+
+func validateEmail(email string) error {
+	_, err := mail.ParseAddress(email)
+	if err != nil {
+		return ErrInvalidEmail
+	}
+	return nil
+}
+
+func validatePassword(password string) error {
+	if strings.TrimSpace(password) != password {
+		return ErrPasswordLeadingTrailingSpaces
+	}
+
+	if len(password) < 8 || len(password) > 128 {
+		return ErrPasswordLength
+	}
+
+	var hasUpper, hasLower, hasDigit, hasSpecial bool
+	for _, ch := range password {
+		switch {
+		case unicode.IsUpper(ch):
+			hasUpper = true
+		case unicode.IsLower(ch):
+			hasLower = true
+		case unicode.IsDigit(ch):
+			hasDigit = true
+		case unicode.IsPunct(ch) || unicode.IsSymbol(ch):
+			hasSpecial = true
+		}
+	}
+
+	if !hasUpper || !hasLower || !hasDigit || !hasSpecial {
+		return ErrPasswordComplexity
+	}
+
+	return nil
 }
 
 func generateRefreshToken() (raw string, hash string, err error) {

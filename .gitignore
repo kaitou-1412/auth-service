@@ -11,11 +11,15 @@
 # Build artifacts
 /server
 
+# RSA keys
+keys/
+
 # Test coverage
 coverage.out
 
-# Kubernetes secrets (use configmap.sample.yaml instead)
+# Kubernetes secrets (use sample files instead)
 k8s/configmap.yaml
+k8s/jwt-keys-secret.yaml
 
 # Implementation details file
 TODO.md

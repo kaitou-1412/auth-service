@@ -16,6 +16,7 @@ type Querier interface {
 	CreateUser(ctx context.Context, arg CreateUserParams) (User, error)
 	DeleteUserRole(ctx context.Context, arg DeleteUserRoleParams) error
 	FindRefreshToken(ctx context.Context, tokenHash string) (RefreshToken, error)
+	GetApp(ctx context.Context, id pgtype.UUID) (App, error)
 	GetRolesForUser(ctx context.Context, userID pgtype.UUID) ([]Role, error)
 	GetSessionsForUser(ctx context.Context, userID pgtype.UUID) ([]Session, error)
 	GetUser(ctx context.Context, id pgtype.UUID) (User, error)

@@ -9,6 +9,7 @@ Authentication service built with Go, running on Kubernetes with PostgreSQL.
 - kubectl
 - Go 1.26+
 - Make
+- OpenSSL (for RSA key generation)
 
 ## Quick Start
 
@@ -20,7 +21,7 @@ minikube start
 cp k8s/configmap.sample.yaml k8s/configmap.yaml
 # Edit k8s/configmap.yaml with your values
 
-# 3. First time setup (builds image inside minikube + deploys)
+# 3. First time setup (generates RSA keys, creates K8s secret, builds image, deploys)
 make setup
 
 # 4. Start development
@@ -40,7 +41,7 @@ Access:
 # Make code changes
 vim internal/service/auth_service.go
 
-# Deploy changes (builds inside minikube, restarts auth-service only, DB stays running)
+# Deploy changes (builds inside minikube, applies manifests including keys secret)
 make deploy
 
 # Restore port-forwards and watch logs
@@ -51,19 +52,22 @@ make dev-watch
 
 ## Key Commands
 
-| Command              | Description                                        |
-| -------------------- | -------------------------------------------------- |
-| `make setup`         | First time setup (build inside minikube + deploy)  |
-| `make deploy`        | Build + restart auth-service (DB untouched)        |
-| `make dev-watch`     | Start port-forwards + live logs                    |
-| `make unit-test`     | Run unit tests                                     |
-| `make coverage`      | Run tests and open HTML coverage in browser        |
-| `make coverage-cli`  | Run tests and browse coverage in terminal          |
-| `make status`        | Show all resource statuses                         |
-| `make logs`          | Follow pod logs                                    |
-| `make db-shell`      | Open psql shell in database pod                    |
-| `make clean`         | Delete all Kubernetes resources                    |
-| `make help`          | Show all commands                                  |
+| Command              | Description                                           |
+| -------------------- | ----------------------------------------------------- |
+| `make setup`         | First time setup (generate keys + build + deploy)     |
+| `make deploy`        | Build + apply keys + apply manifests                  |
+| `make dev-watch`     | Start port-forwards + live logs                       |
+| `make generate-keys` | Generate RSA key pair for JWT signing                 |
+| `make apply-keys`    | Create/update K8s secret from RSA keys                |
+| `make sqlc-generate` | Run sqlc generate                                     |
+| `make unit-test`     | Run unit tests                                        |
+| `make coverage`      | Run tests and open HTML coverage in browser           |
+| `make coverage-cli`  | Run tests and browse coverage in terminal             |
+| `make status`        | Show all resource statuses                            |
+| `make logs`          | Follow pod logs                                       |
+| `make db-shell`      | Open psql shell in database pod                       |
+| `make clean`         | Delete all Kubernetes resources                       |
+| `make help`          | Show all commands                                     |
 
 ## Project Structure
 
@@ -72,6 +76,8 @@ make dev-watch
 ├── api/
 │   └── openapi.yaml          # OpenAPI 3.0 spec (embedded into binary)
 ├── cmd/server/               # Application entry point
+├── docs/
+│   └── API-Documentation.md  # Detailed API documentation
 ├── internal/
 │   ├── app/                  # Router setup
 │   ├── db/
@@ -80,10 +86,13 @@ make dev-watch
 │   │   ├── queries/          # sqlc SQL queries
 │   │   └── sqlc/             # Generated Go DB code
 │   ├── handler/              # HTTP handlers (thin layer)
-│   ├── middleware/           # HTTP middleware (logging)
+│   ├── keyutil/              # RSA key loading utilities
+│   ├── middleware/           # HTTP middleware (logging, auth)
 │   └── service/              # Business logic
+├── keys/                     # RSA key pair (gitignored)
 ├── k8s/                      # Kubernetes manifests
 │   ├── configmap.yaml        # Configuration (gitignored)
+│   ├── jwt-keys-secret.yaml  # RSA keys K8s secret
 │   └── *.yaml                # Deployments, services, etc.
 ├── Dockerfile                # Multi-stage build
 └── Makefile                  # Development commands
@@ -97,7 +106,8 @@ make dev-watch
 │   (Go API)   │     │ (PostgreSQL)│
 └──────────────┘     └─────────────┘
        │
-       └─ ConfigMap (env vars)
+       ├─ ConfigMap (env vars)
+       └─ Secret (RSA keys mounted at /keys)
 ```
 
 Request flow:
@@ -106,12 +116,24 @@ Request flow:
 HTTP Request → Middleware → Handler → Service → DB (sqlc + pgx)
 ```
 
+## Authentication
+
+- **JWT Signing**: RS256 (RSA 2048-bit key pair)
+- **Private key**: Loaded from `/keys/private.pem` (signs access tokens)
+- **Public key**: Loaded from `/keys/public.pem` (verifies access tokens in auth middleware)
+- **Access token expiry**: 15 minutes
+- **Session expiry**: 24 hours
+- **Refresh token expiry**: 30 days
+
+Keys are generated locally in `keys/` and mounted into the pod via a Kubernetes Secret (`jwt-rsa-keys`).
+
 ## Configuration
 
 All configuration is in `k8s/configmap.yaml`:
 
 - Application port
 - Database credentials and connection details
+- JWT key file paths (`JWT_PRIVATE_KEY_PATH`, `JWT_PUBLIC_KEY_PATH`)
 
 **Note:** `configmap.yaml` is gitignored. Use `configmap.sample.yaml` as template.
 
@@ -125,12 +147,17 @@ All configuration is in `k8s/configmap.yaml`:
 
 Full interactive docs available at `http://localhost:8080/swagger` when the service is running.
 
+Detailed API documentation: [docs/API-Documentation.md](docs/API-Documentation.md)
+
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/v1/health` | Health check |
-| `POST` | `/v1/auth/signup` | Create a new user |
-| `POST` | `/v1/auth/login` | Authenticate user and create session |
+| `POST` | `/v1/auth/signup` | Create a new user (validates app, email, password) |
+| `POST` | `/v1/auth/login` | Authenticate user and create session (validates app, email) |
+| `POST` | `/v1/auth/token/refresh` | Rotate refresh token and issue new access token |
 | `POST` | `/v1/auth/logout` | Logout from current session (requires auth) |
+| `POST` | `/v1/auth/logout-all` | Logout from all devices (requires auth) |
+| `POST` | `/v1/auth/password/change` | Change password (requires auth) |
 
 ## Local Development Tools
 
@@ -141,7 +168,7 @@ go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
 sqlc version
 
 # Regenerate Go code after editing queries in internal/db/queries/
-sqlc generate
+make sqlc-generate
 ```
 
 ### goose — Database migrations

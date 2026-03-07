@@ -17,11 +17,13 @@ type Querier interface {
 	DeleteUserRole(ctx context.Context, arg DeleteUserRoleParams) error
 	FindRefreshToken(ctx context.Context, tokenHash string) (RefreshToken, error)
 	GetApp(ctx context.Context, id pgtype.UUID) (App, error)
+	GetRole(ctx context.Context, id pgtype.UUID) (Role, error)
 	GetRolesForUser(ctx context.Context, userID pgtype.UUID) ([]Role, error)
 	GetSessionsForUser(ctx context.Context, userID pgtype.UUID) ([]Session, error)
 	GetUser(ctx context.Context, id pgtype.UUID) (User, error)
 	GetUserByAppAndEmail(ctx context.Context, arg GetUserByAppAndEmailParams) (User, error)
 	GetUserPasswordHash(ctx context.Context, id pgtype.UUID) (string, error)
+	GetUserRole(ctx context.Context, arg GetUserRoleParams) (UserRole, error)
 	InsertUserRole(ctx context.Context, arg InsertUserRoleParams) (UserRole, error)
 	RevokeAllRefreshTokensForUser(ctx context.Context, userID pgtype.UUID) error
 	RevokeAllSessionsForUser(ctx context.Context, userID pgtype.UUID) error

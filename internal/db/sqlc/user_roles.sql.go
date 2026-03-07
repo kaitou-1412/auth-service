@@ -60,6 +60,25 @@ func (q *Queries) GetRolesForUser(ctx context.Context, userID pgtype.UUID) ([]Ro
 	return items, nil
 }
 
+const GetUserRole = `-- name: GetUserRole :one
+SELECT user_id, role_id, assigned_at FROM user_roles
+WHERE user_id = $1
+  AND role_id = $2
+LIMIT 1
+`
+
+type GetUserRoleParams struct {
+	UserID pgtype.UUID `json:"user_id"`
+	RoleID pgtype.UUID `json:"role_id"`
+}
+
+func (q *Queries) GetUserRole(ctx context.Context, arg GetUserRoleParams) (UserRole, error) {
+	row := q.db.QueryRow(ctx, GetUserRole, arg.UserID, arg.RoleID)
+	var i UserRole
+	err := row.Scan(&i.UserID, &i.RoleID, &i.AssignedAt)
+	return i, err
+}
+
 const InsertUserRole = `-- name: InsertUserRole :one
 INSERT INTO user_roles (user_id, role_id)
 VALUES ($1, $2)

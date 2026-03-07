@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/kaitou-1412/auth-service/internal/db/sqlc"
 	"github.com/kaitou-1412/auth-service/internal/middleware"
@@ -20,6 +21,11 @@ type AuthService interface {
 	LogoutAll(ctx context.Context, userID string) error
 	ChangePassword(ctx context.Context, params service.ChangePasswordParams) error
 	RefreshToken(ctx context.Context, rawToken string) (service.RefreshTokenResult, error)
+	GetSessions(ctx context.Context, userID, currentSessionID string) ([]service.SessionInfo, error)
+	RevokeSession(ctx context.Context, userID, sessionID string) error
+	AssignRole(ctx context.Context, params service.AssignRoleParams) (service.AssignRoleResult, error)
+	RemoveRole(ctx context.Context, params service.RemoveRoleParams) (service.RemoveRoleResult, error)
+	GetUserRoles(ctx context.Context, userID string) ([]service.RoleInfo, error)
 }
 
 type AuthHandler struct {
@@ -44,8 +50,12 @@ func httpError(w http.ResponseWriter, err error) {
 		RespondWithError(w, http.StatusUnauthorized, err.Error())
 	case errors.Is(err, service.ErrUserNotFound):
 		RespondWithError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, service.ErrAppNotFound):
+	case errors.Is(err, service.ErrAppNotFound),
+		errors.Is(err, service.ErrRoleNotFound),
+		errors.Is(err, service.ErrRoleNotAssigned):
 		RespondWithError(w, http.StatusNotFound, err.Error())
+	case errors.Is(err, service.ErrRoleAlreadyAssigned):
+		RespondWithError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, service.ErrInvalidAppID),
 		errors.Is(err, service.ErrInvalidUserID),
 		errors.Is(err, service.ErrInvalidSessionID),
@@ -270,4 +280,152 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("logout successful", "session_id", sessionID)
 	RespondWithJSON(w, http.StatusOK, map[string]string{"message": "logged out successfully"})
+}
+
+type sessionResponse struct {
+	SessionID  string  `json:"session_id"`
+	DeviceInfo *string `json:"device_info"`
+	IpAddress  *string `json:"ip_address"`
+	CreatedAt  string  `json:"created_at"`
+	ExpiresAt  string  `json:"expires_at"`
+	Revoked    *bool   `json:"revoked"`
+	Current    bool    `json:"current"`
+}
+
+func (h *AuthHandler) GetSessions(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.UserIDFromContext(r.Context())
+	sessionID := middleware.SessionIDFromContext(r.Context())
+	slog.Info("get sessions request received", "user_id", userID)
+
+	sessions, err := h.svc.GetSessions(r.Context(), userID, sessionID)
+	if err != nil {
+		slog.Warn("get sessions failed", "user_id", userID, "error", err)
+		httpError(w, err)
+		return
+	}
+
+	resp := make([]sessionResponse, 0, len(sessions))
+	for _, s := range sessions {
+		resp = append(resp, sessionResponse{
+			SessionID:  s.SessionID,
+			DeviceInfo: s.DeviceInfo,
+			IpAddress:  s.IpAddress,
+			CreatedAt:  s.CreatedAt.Time.UTC().Format("2006-01-02T15:04:05Z"),
+			ExpiresAt:  s.ExpiresAt.Time.UTC().Format("2006-01-02T15:04:05Z"),
+			Revoked:    s.Revoked,
+			Current:    s.Current,
+		})
+	}
+
+	slog.Info("get sessions successful", "user_id", userID)
+	RespondWithJSON(w, http.StatusOK, map[string]any{"sessions": resp})
+}
+
+func (h *AuthHandler) RevokeSession(w http.ResponseWriter, r *http.Request) {
+	userID := middleware.UserIDFromContext(r.Context())
+	sessionID := chi.URLParam(r, "session_id")
+	slog.Info("revoke session request received", "user_id", userID, "session_id", sessionID)
+
+	if err := h.svc.RevokeSession(r.Context(), userID, sessionID); err != nil {
+		slog.Warn("revoke session failed", "session_id", sessionID, "error", err)
+		httpError(w, err)
+		return
+	}
+
+	slog.Info("revoke session successful", "session_id", sessionID)
+	RespondWithJSON(w, http.StatusOK, map[string]string{"message": "session revoked successfully"})
+}
+
+type assignRoleRequest struct {
+	RoleID string `json:"role_id"`
+}
+
+type assignRoleResponse struct {
+	UserID string `json:"user_id"`
+	RoleID string `json:"role_id"`
+}
+
+func (h *AuthHandler) AssignRole(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "user_id")
+	slog.Info("assign role request received", "user_id", userID)
+
+	var req assignRoleRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		RespondWithError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if req.RoleID == "" {
+		RespondWithError(w, http.StatusBadRequest, "role_id is required")
+		return
+	}
+
+	result, err := h.svc.AssignRole(r.Context(), service.AssignRoleParams{
+		UserID: userID,
+		RoleID: req.RoleID,
+	})
+	if err != nil {
+		slog.Warn("assign role failed", "user_id", userID, "error", err)
+		httpError(w, err)
+		return
+	}
+
+	slog.Info("assign role successful", "user_id", userID, "role_id", req.RoleID)
+	RespondWithJSON(w, http.StatusOK, assignRoleResponse{
+		UserID: result.UserID,
+		RoleID: result.RoleID,
+	})
+}
+
+func (h *AuthHandler) RemoveRole(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "user_id")
+	roleID := chi.URLParam(r, "role_id")
+	slog.Info("remove role request received", "user_id", userID, "role_id", roleID)
+
+	result, err := h.svc.RemoveRole(r.Context(), service.RemoveRoleParams{
+		UserID: userID,
+		RoleID: roleID,
+	})
+	if err != nil {
+		slog.Warn("remove role failed", "user_id", userID, "role_id", roleID, "error", err)
+		httpError(w, err)
+		return
+	}
+
+	slog.Info("remove role successful", "user_id", userID, "role_id", roleID)
+	RespondWithJSON(w, http.StatusOK, assignRoleResponse{
+		UserID: result.UserID,
+		RoleID: result.RoleID,
+	})
+}
+
+type roleItem struct {
+	RoleID   string `json:"role_id"`
+	RoleName string `json:"role_name"`
+}
+
+func (h *AuthHandler) GetUserRoles(w http.ResponseWriter, r *http.Request) {
+	userID := chi.URLParam(r, "user_id")
+	slog.Info("get user roles request received", "user_id", userID)
+
+	roles, err := h.svc.GetUserRoles(r.Context(), userID)
+	if err != nil {
+		slog.Warn("get user roles failed", "user_id", userID, "error", err)
+		httpError(w, err)
+		return
+	}
+
+	items := make([]roleItem, 0, len(roles))
+	for _, r := range roles {
+		items = append(items, roleItem{
+			RoleID:   r.RoleID,
+			RoleName: r.RoleName,
+		})
+	}
+
+	slog.Info("get user roles successful", "user_id", userID)
+	RespondWithJSON(w, http.StatusOK, map[string]any{
+		"user_id": userID,
+		"roles":   items,
+	})
 }

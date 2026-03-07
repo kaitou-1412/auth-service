@@ -130,7 +130,8 @@ paths:
         - Verifies password against stored bcrypt hash.
         - Creates a session (24h expiry) with User-Agent and IP.
         - Generates a refresh token (30-day expiry, SHA-256 hash stored).
-        - Returns a JWT access token (RS256, 15-minute expiry).
+        - Fetches the user's assigned roles.
+        - Returns a JWT access token (RS256, 15-minute expiry) with `roles` claim.
       requestBody:
         required: true
         content:
@@ -200,7 +201,8 @@ paths:
         2. Verifies the associated session is not revoked and not expired.
         3. Revokes the old refresh token.
         4. Creates a new refresh token linked to the same session and user.
-        5. Generates a new JWT access token (RS256, 15-minute expiry).
+        5. Fetches the user's current roles.
+        6. Generates a new JWT access token (RS256, 15-minute expiry) with `roles` claim.
       requestBody:
         required: true
         content:
@@ -411,6 +413,316 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /v1/auth/users/{user_id}/roles:
+    get:
+      summary: Get all roles assigned to a user
+      operationId: getUserRoles
+      tags: [Auth]
+      description: |
+        Returns all roles currently assigned to the specified user.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the target user
+      responses:
+        "200":
+          description: Roles retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserRolesResponse"
+        "400":
+          description: Invalid user_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "invalid user_id"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "invalid or expired token"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "user not found"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      summary: Assign a role to a user
+      operationId: assignRole
+      tags: [Auth]
+      description: |
+        Assigns a role to a user by inserting a record into the `user_roles` table.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the target user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignRoleRequest"
+            example:
+              role_id: "b2c3d4e5-f6a7-8901-bcde-f12345678901"
+      responses:
+        "200":
+          description: Role assigned successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserRoleResponse"
+        "400":
+          description: Invalid user_id or role_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalid_user_id:
+                  value:
+                    error: "invalid user_id"
+                invalid_role_id:
+                  value:
+                    error: "invalid role_id"
+                missing_role_id:
+                  value:
+                    error: "role_id is required"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "invalid or expired token"
+        "404":
+          description: User or role not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                user_not_found:
+                  value:
+                    error: "user not found"
+                role_not_found:
+                  value:
+                    error: "role not found"
+        "409":
+          description: Role already assigned
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "role already assigned to this user"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/auth/users/{user_id}/roles/{role_id}:
+    delete:
+      summary: Remove a role from a user
+      operationId: removeRole
+      tags: [Auth]
+      description: |
+        Removes a role from a user by deleting the record from the `user_roles` table.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the target user
+        - name: role_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the role to remove
+      responses:
+        "200":
+          description: Role removed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserRoleResponse"
+        "400":
+          description: Invalid user_id or role_id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                invalid_user_id:
+                  value:
+                    error: "invalid user_id"
+                invalid_role_id:
+                  value:
+                    error: "invalid role_id"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "invalid or expired token"
+        "404":
+          description: User, role, or assignment not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              examples:
+                user_not_found:
+                  value:
+                    error: "user not found"
+                role_not_found:
+                  value:
+                    error: "role not found"
+                role_not_assigned:
+                  value:
+                    error: "role not assigned to this user"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/auth/sessions/{session_id}:
+    delete:
+      summary: Revoke a specific session
+      operationId: revokeSession
+      tags: [Auth]
+      description: |
+        Revokes a specific session and its associated refresh tokens.
+        The session must belong to the authenticated user.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the session to revoke
+      responses:
+        "200":
+          description: Session revoked successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MessageResponse"
+              example:
+                message: "session revoked successfully"
+        "400":
+          description: Invalid session ID
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "invalid session_id"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "invalid or expired token"
+        "403":
+          description: Session belongs to another user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "session does not belong to this user"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "session not found"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/auth/sessions:
+    get:
+      summary: List all sessions for the authenticated user
+      operationId: getSessions
+      tags: [Auth]
+      description: |
+        Returns all sessions for the authenticated user, sorted by `created_at DESC`.
+        The session matching the current access token is marked with `"current": true`.
+      security:
+        - BearerAuth: []
+      responses:
+        "200":
+          description: Sessions retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionsResponse"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: "invalid or expired token"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
   securitySchemes:
     BearerAuth:
@@ -491,7 +803,9 @@ components:
       properties:
         access_token:
           type: string
-          description: RS256 JWT access token (15-minute expiry)
+          description: |
+            RS256 JWT access token (15-minute expiry).
+            Claims include: sub (user ID), session_id, roles (list of role names), iat, exp.
         refresh_token:
           type: string
           description: Opaque refresh token (30-day expiry)
@@ -542,6 +856,76 @@ components:
       type: object
       properties:
         message:
+          type: string
+
+    AssignRoleRequest:
+      type: object
+      required: [role_id]
+      properties:
+        role_id:
+          type: string
+          format: uuid
+          description: UUID of the role to assign
+
+    UserRoleResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        role_id:
+          type: string
+          format: uuid
+
+    SessionsResponse:
+      type: object
+      properties:
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/SessionItem"
+
+    SessionItem:
+      type: object
+      properties:
+        session_id:
+          type: string
+          format: uuid
+        device_info:
+          type: string
+          nullable: true
+        ip_address:
+          type: string
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        revoked:
+          type: boolean
+        current:
+          type: boolean
+
+    UserRolesResponse:
+      type: object
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/RoleItem"
+
+    RoleItem:
+      type: object
+      properties:
+        role_id:
+          type: string
+          format: uuid
+        role_name:
           type: string
 
     ErrorResponse:

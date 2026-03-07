@@ -15,6 +15,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/kaitou-1412/auth-service/internal/db/sqlc"
 	"golang.org/x/crypto/bcrypt"
@@ -185,9 +186,15 @@ func (s *AuthService) Login(ctx context.Context, params LoginParams) (LoginResul
 		return LoginResult{}, err
 	}
 
+	roleNames, err := s.getRoleNames(ctx, user.ID)
+	if err != nil {
+		slog.Error("login: failed to fetch user roles", "user_id", user.ID, "error", err)
+		return LoginResult{}, err
+	}
+
 	userIDBytes := uuidToBytes(user.ID)
 	sessionIDBytes := uuidToBytes(session.ID)
-	accessToken, err := s.generateAccessToken(hex.EncodeToString(userIDBytes), hex.EncodeToString(sessionIDBytes), now)
+	accessToken, err := s.generateAccessToken(hex.EncodeToString(userIDBytes), hex.EncodeToString(sessionIDBytes), roleNames, now)
 	if err != nil {
 		slog.Error("login: failed to generate access token", "error", err)
 		return LoginResult{}, err
@@ -255,9 +262,15 @@ func (s *AuthService) RefreshToken(ctx context.Context, rawToken string) (Refres
 		return RefreshTokenResult{}, err
 	}
 
+	roleNames, err := s.getRoleNames(ctx, session.UserID)
+	if err != nil {
+		slog.Error("token refresh: failed to fetch user roles", "user_id", session.UserID, "error", err)
+		return RefreshTokenResult{}, err
+	}
+
 	userIDBytes := uuidToBytes(session.UserID)
 	sessionIDBytes := uuidToBytes(session.ID)
-	accessToken, err := s.generateAccessToken(hex.EncodeToString(userIDBytes), hex.EncodeToString(sessionIDBytes), now)
+	accessToken, err := s.generateAccessToken(hex.EncodeToString(userIDBytes), hex.EncodeToString(sessionIDBytes), roleNames, now)
 	if err != nil {
 		slog.Error("token refresh: failed to generate access token", "error", err)
 		return RefreshTokenResult{}, err
@@ -381,15 +394,286 @@ func (s *AuthService) ChangePassword(ctx context.Context, params ChangePasswordP
 	return nil
 }
 
-func (s *AuthService) generateAccessToken(userID, sessionID string, now time.Time) (string, error) {
+type SessionInfo struct {
+	SessionID  string
+	DeviceInfo *string
+	IpAddress  *string
+	CreatedAt  pgtype.Timestamp
+	ExpiresAt  pgtype.Timestamp
+	Revoked    *bool
+	Current    bool
+}
+
+func (s *AuthService) GetSessions(ctx context.Context, userID, currentSessionID string) ([]SessionInfo, error) {
+	slog.Info("get sessions attempt", "user_id", userID)
+
+	var uid pgtype.UUID
+	if err := uid.Scan(userID); err != nil {
+		return nil, ErrInvalidUserID
+	}
+
+	sessions, err := s.queries.GetSessionsForUser(ctx, uid)
+	if err != nil {
+		slog.Error("get sessions: failed to fetch sessions", "user_id", userID, "error", err)
+		return nil, err
+	}
+
+	result := make([]SessionInfo, 0, len(sessions))
+	for _, sess := range sessions {
+		sidBytes := uuidToBytes(sess.ID)
+		sidHex := hex.EncodeToString(sidBytes)
+		result = append(result, SessionInfo{
+			SessionID:  formatUUID(sidHex),
+			DeviceInfo: sess.DeviceInfo,
+			IpAddress:  sess.IpAddress,
+			CreatedAt:  sess.CreatedAt,
+			ExpiresAt:  sess.ExpiresAt,
+			Revoked:    sess.Revoked,
+			Current:    sidHex == currentSessionID,
+		})
+	}
+
+	slog.Info("get sessions successful", "user_id", userID, "count", len(result))
+	return result, nil
+}
+
+func (s *AuthService) RevokeSession(ctx context.Context, userID, sessionID string) error {
+	slog.Info("revoke session attempt", "user_id", userID, "session_id", sessionID)
+
+	var uid pgtype.UUID
+	if err := uid.Scan(userID); err != nil {
+		return ErrInvalidUserID
+	}
+
+	var sid pgtype.UUID
+	if err := sid.Scan(sessionID); err != nil {
+		return ErrInvalidSessionID
+	}
+
+	_, err := s.queries.VerifySessionBelongsToUser(ctx, db.VerifySessionBelongsToUserParams{
+		ID:     sid,
+		UserID: uid,
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Check if session exists at all to distinguish 404 vs 403
+			_, getErr := s.queries.VerifySession(ctx, sid)
+			if errors.Is(getErr, pgx.ErrNoRows) {
+				return ErrSessionNotFound
+			}
+			return ErrSessionUserMismatch
+		}
+		slog.Error("revoke session: failed to verify session ownership", "session_id", sessionID, "error", err)
+		return err
+	}
+
+	if err := s.queries.RevokeRefreshTokensForSession(ctx, sid); err != nil {
+		slog.Error("revoke session: failed to revoke refresh tokens", "session_id", sessionID, "error", err)
+		return err
+	}
+
+	if _, err := s.queries.RevokeSession(ctx, sid); err != nil {
+		slog.Error("revoke session: failed to revoke session", "session_id", sessionID, "error", err)
+		return err
+	}
+
+	slog.Info("revoke session successful", "session_id", sessionID)
+	return nil
+}
+
+type AssignRoleParams struct {
+	UserID string
+	RoleID string
+}
+
+type AssignRoleResult struct {
+	UserID string
+	RoleID string
+}
+
+func (s *AuthService) AssignRole(ctx context.Context, params AssignRoleParams) (AssignRoleResult, error) {
+	slog.Info("assign role attempt", "user_id", params.UserID, "role_id", params.RoleID)
+
+	var uid pgtype.UUID
+	if err := uid.Scan(params.UserID); err != nil {
+		return AssignRoleResult{}, ErrInvalidUserID
+	}
+
+	if _, err := s.queries.GetUser(ctx, uid); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return AssignRoleResult{}, ErrUserNotFound
+		}
+		slog.Error("assign role: failed to check user existence", "user_id", params.UserID, "error", err)
+		return AssignRoleResult{}, err
+	}
+
+	var rid pgtype.UUID
+	if err := rid.Scan(params.RoleID); err != nil {
+		return AssignRoleResult{}, ErrInvalidRoleID
+	}
+
+	if _, err := s.queries.GetRole(ctx, rid); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return AssignRoleResult{}, ErrRoleNotFound
+		}
+		slog.Error("assign role: failed to check role existence", "role_id", params.RoleID, "error", err)
+		return AssignRoleResult{}, err
+	}
+
+	_, err := s.queries.InsertUserRole(ctx, db.InsertUserRoleParams{
+		UserID: uid,
+		RoleID: rid,
+	})
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return AssignRoleResult{}, ErrRoleAlreadyAssigned
+		}
+		slog.Error("assign role: failed to insert user role", "user_id", params.UserID, "role_id", params.RoleID, "error", err)
+		return AssignRoleResult{}, err
+	}
+
+	slog.Info("assign role successful", "user_id", params.UserID, "role_id", params.RoleID)
+	return AssignRoleResult{
+		UserID: params.UserID,
+		RoleID: params.RoleID,
+	}, nil
+}
+
+type RemoveRoleParams struct {
+	UserID string
+	RoleID string
+}
+
+type RemoveRoleResult struct {
+	UserID string
+	RoleID string
+}
+
+func (s *AuthService) RemoveRole(ctx context.Context, params RemoveRoleParams) (RemoveRoleResult, error) {
+	slog.Info("remove role attempt", "user_id", params.UserID, "role_id", params.RoleID)
+
+	var uid pgtype.UUID
+	if err := uid.Scan(params.UserID); err != nil {
+		return RemoveRoleResult{}, ErrInvalidUserID
+	}
+
+	if _, err := s.queries.GetUser(ctx, uid); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RemoveRoleResult{}, ErrUserNotFound
+		}
+		slog.Error("remove role: failed to check user existence", "user_id", params.UserID, "error", err)
+		return RemoveRoleResult{}, err
+	}
+
+	var rid pgtype.UUID
+	if err := rid.Scan(params.RoleID); err != nil {
+		return RemoveRoleResult{}, ErrInvalidRoleID
+	}
+
+	if _, err := s.queries.GetRole(ctx, rid); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RemoveRoleResult{}, ErrRoleNotFound
+		}
+		slog.Error("remove role: failed to check role existence", "role_id", params.RoleID, "error", err)
+		return RemoveRoleResult{}, err
+	}
+
+	if _, err := s.queries.GetUserRole(ctx, db.GetUserRoleParams{
+		UserID: uid,
+		RoleID: rid,
+	}); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return RemoveRoleResult{}, ErrRoleNotAssigned
+		}
+		slog.Error("remove role: failed to check role assignment", "user_id", params.UserID, "role_id", params.RoleID, "error", err)
+		return RemoveRoleResult{}, err
+	}
+
+	if err := s.queries.DeleteUserRole(ctx, db.DeleteUserRoleParams{
+		UserID: uid,
+		RoleID: rid,
+	}); err != nil {
+		slog.Error("remove role: failed to delete user role", "user_id", params.UserID, "role_id", params.RoleID, "error", err)
+		return RemoveRoleResult{}, err
+	}
+
+	slog.Info("remove role successful", "user_id", params.UserID, "role_id", params.RoleID)
+	return RemoveRoleResult{
+		UserID: params.UserID,
+		RoleID: params.RoleID,
+	}, nil
+}
+
+type RoleInfo struct {
+	RoleID   string
+	RoleName string
+}
+
+func (s *AuthService) GetUserRoles(ctx context.Context, userID string) ([]RoleInfo, error) {
+	slog.Info("get user roles attempt", "user_id", userID)
+
+	var uid pgtype.UUID
+	if err := uid.Scan(userID); err != nil {
+		return nil, ErrInvalidUserID
+	}
+
+	if _, err := s.queries.GetUser(ctx, uid); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+		slog.Error("get user roles: failed to check user existence", "user_id", userID, "error", err)
+		return nil, err
+	}
+
+	roles, err := s.queries.GetRolesForUser(ctx, uid)
+	if err != nil {
+		slog.Error("get user roles: failed to fetch roles", "user_id", userID, "error", err)
+		return nil, err
+	}
+
+	result := make([]RoleInfo, 0, len(roles))
+	for _, r := range roles {
+		ridBytes := uuidToBytes(r.ID)
+		result = append(result, RoleInfo{
+			RoleID:   formatUUID(hex.EncodeToString(ridBytes)),
+			RoleName: r.Name,
+		})
+	}
+
+	slog.Info("get user roles successful", "user_id", userID, "count", len(result))
+	return result, nil
+}
+
+func formatUUID(hex string) string {
+	if len(hex) != 32 {
+		return hex
+	}
+	return hex[0:8] + "-" + hex[8:12] + "-" + hex[12:16] + "-" + hex[16:20] + "-" + hex[20:32]
+}
+
+func (s *AuthService) generateAccessToken(userID, sessionID string, roles []string, now time.Time) (string, error) {
 	claims := jwt.MapClaims{
 		"sub":        userID,
 		"session_id": sessionID,
+		"roles":      roles,
 		"iat":        now.Unix(),
 		"exp":        now.Add(accessTokenDuration).Unix(),
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	return token.SignedString(s.privateKey)
+}
+
+func (s *AuthService) getRoleNames(ctx context.Context, userID pgtype.UUID) ([]string, error) {
+	roles, err := s.queries.GetRolesForUser(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(roles))
+	for _, r := range roles {
+		names = append(names, r.Name)
+	}
+	return names, nil
 }
 
 func validateEmail(email string) error {

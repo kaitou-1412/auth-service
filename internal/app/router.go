@@ -46,6 +46,11 @@ func NewRouter(queries *db.Queries, privateKey *rsa.PrivateKey, publicKey *rsa.P
 		r.Post("/auth/logout", authHandler.Logout)
 		r.Post("/auth/logout-all", authHandler.LogoutAll)
 		r.Post("/auth/password/change", authHandler.ChangePassword)
+		r.Get("/auth/sessions", authHandler.GetSessions)
+		r.Delete("/auth/sessions/{session_id}", authHandler.RevokeSession)
+		r.Post("/auth/users/{user_id}/roles", authHandler.AssignRole)
+		r.Delete("/auth/users/{user_id}/roles/{role_id}", authHandler.RemoveRole)
+		r.Get("/auth/users/{user_id}/roles", authHandler.GetUserRoles)
 	})
 
 	r.Mount("/v1", v1Router)

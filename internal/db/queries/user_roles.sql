@@ -8,6 +8,12 @@ DELETE FROM user_roles
 WHERE user_id = $1
   AND role_id = $2;
 
+-- name: GetUserRole :one
+SELECT * FROM user_roles
+WHERE user_id = $1
+  AND role_id = $2
+LIMIT 1;
+
 -- name: GetRolesForUser :many
 SELECT r.* FROM roles r
 JOIN user_roles ur ON ur.role_id = r.id

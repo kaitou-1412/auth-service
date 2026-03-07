@@ -18,7 +18,7 @@ Authentication service built with Go, running on Kubernetes with PostgreSQL.
 minikube start
 
 # 2. Copy and configure secrets
-cp k8s/configmap.sample.yaml k8s/configmap.yaml
+cp k8s/configmap.sample k8s/configmap.yaml
 # Edit k8s/configmap.yaml with your values
 
 # 3. First time setup (generates RSA keys, creates K8s secret, builds image, deploys)
@@ -158,6 +158,11 @@ Detailed API documentation: [docs/API-Documentation.md](docs/API-Documentation.m
 | `POST` | `/v1/auth/logout` | Logout from current session (requires auth) |
 | `POST` | `/v1/auth/logout-all` | Logout from all devices (requires auth) |
 | `POST` | `/v1/auth/password/change` | Change password (requires auth) |
+| `GET` | `/v1/auth/sessions` | List all sessions (requires auth) |
+| `DELETE` | `/v1/auth/sessions/{session_id}` | Revoke a specific session (requires auth) |
+| `GET` | `/v1/auth/users/{user_id}/roles` | List roles for a user (requires auth) |
+| `POST` | `/v1/auth/users/{user_id}/roles` | Assign a role to a user (requires auth) |
+| `DELETE` | `/v1/auth/users/{user_id}/roles/{role_id}` | Remove a role from a user (requires auth) |
 
 ## Local Development Tools
 

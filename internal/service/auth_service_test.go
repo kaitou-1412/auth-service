@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/kaitou-1412/auth-service/internal/db/sqlc"
 	"github.com/kaitou-1412/auth-service/internal/service"
@@ -34,6 +35,14 @@ type mockQuerier struct {
 	findRefreshToken              func(ctx context.Context, tokenHash string) (db.RefreshToken, error)
 	verifySession                 func(ctx context.Context, id pgtype.UUID) (db.Session, error)
 	revokeRefreshToken            func(ctx context.Context, id pgtype.UUID) (db.RefreshToken, error)
+	getSessionsForUser            func(ctx context.Context, userID pgtype.UUID) ([]db.Session, error)
+	verifySessionBelongsToUser    func(ctx context.Context, arg db.VerifySessionBelongsToUserParams) (db.Session, error)
+	insertUserRole                func(ctx context.Context, arg db.InsertUserRoleParams) (db.UserRole, error)
+	getUser                       func(ctx context.Context, id pgtype.UUID) (db.User, error)
+	getRole                       func(ctx context.Context, id pgtype.UUID) (db.Role, error)
+	getUserRole                   func(ctx context.Context, arg db.GetUserRoleParams) (db.UserRole, error)
+	deleteUserRole                func(ctx context.Context, arg db.DeleteUserRoleParams) error
+	getRolesForUser               func(ctx context.Context, userID pgtype.UUID) ([]db.Role, error)
 }
 
 func (m *mockQuerier) GetApp(ctx context.Context, id pgtype.UUID) (db.App, error) {
@@ -90,6 +99,38 @@ func (m *mockQuerier) GetUserPasswordHash(ctx context.Context, id pgtype.UUID) (
 
 func (m *mockQuerier) UpdateUserPasswordHash(ctx context.Context, arg db.UpdateUserPasswordHashParams) (db.User, error) {
 	return m.updateUserPasswordHash(ctx, arg)
+}
+
+func (m *mockQuerier) GetSessionsForUser(ctx context.Context, userID pgtype.UUID) ([]db.Session, error) {
+	return m.getSessionsForUser(ctx, userID)
+}
+
+func (m *mockQuerier) VerifySessionBelongsToUser(ctx context.Context, arg db.VerifySessionBelongsToUserParams) (db.Session, error) {
+	return m.verifySessionBelongsToUser(ctx, arg)
+}
+
+func (m *mockQuerier) InsertUserRole(ctx context.Context, arg db.InsertUserRoleParams) (db.UserRole, error) {
+	return m.insertUserRole(ctx, arg)
+}
+
+func (m *mockQuerier) GetUser(ctx context.Context, id pgtype.UUID) (db.User, error) {
+	return m.getUser(ctx, id)
+}
+
+func (m *mockQuerier) GetRole(ctx context.Context, id pgtype.UUID) (db.Role, error) {
+	return m.getRole(ctx, id)
+}
+
+func (m *mockQuerier) GetUserRole(ctx context.Context, arg db.GetUserRoleParams) (db.UserRole, error) {
+	return m.getUserRole(ctx, arg)
+}
+
+func (m *mockQuerier) DeleteUserRole(ctx context.Context, arg db.DeleteUserRoleParams) error {
+	return m.deleteUserRole(ctx, arg)
+}
+
+func (m *mockQuerier) GetRolesForUser(ctx context.Context, userID pgtype.UUID) ([]db.Role, error) {
+	return m.getRolesForUser(ctx, userID)
 }
 
 func appFound(_ context.Context, _ pgtype.UUID) (db.App, error) {
@@ -324,6 +365,10 @@ func TestAuthService_Login(t *testing.T) {
 		UserID: activeUser.ID,
 	}
 
+	noRoles := func(_ context.Context, _ pgtype.UUID) ([]db.Role, error) {
+		return []db.Role{}, nil
+	}
+
 	tests := []struct {
 		name                 string
 		params               service.LoginParams
@@ -331,6 +376,7 @@ func TestAuthService_Login(t *testing.T) {
 		getUserByAppAndEmail func(ctx context.Context, arg db.GetUserByAppAndEmailParams) (db.User, error)
 		createSession        func(ctx context.Context, arg db.CreateSessionParams) (db.Session, error)
 		createRefreshToken   func(ctx context.Context, arg db.CreateRefreshTokenParams) (db.RefreshToken, error)
+		getRolesForUser      func(ctx context.Context, userID pgtype.UUID) ([]db.Role, error)
 		wantErr              error
 		wantResult           bool
 	}{
@@ -453,6 +499,28 @@ func TestAuthService_Login(t *testing.T) {
 			wantErr: errors.New("insert failed"),
 		},
 		{
+			name: "get_roles_fails",
+			params: service.LoginParams{
+				AppID:    validAppID,
+				Email:    email,
+				Password: password,
+			},
+			getApp: appFound,
+			getUserByAppAndEmail: func(_ context.Context, _ db.GetUserByAppAndEmailParams) (db.User, error) {
+				return activeUser, nil
+			},
+			createSession: func(_ context.Context, _ db.CreateSessionParams) (db.Session, error) {
+				return defaultSession, nil
+			},
+			createRefreshToken: func(_ context.Context, _ db.CreateRefreshTokenParams) (db.RefreshToken, error) {
+				return db.RefreshToken{}, nil
+			},
+			getRolesForUser: func(_ context.Context, _ pgtype.UUID) ([]db.Role, error) {
+				return nil, errors.New("db error")
+			},
+			wantErr: errors.New("db error"),
+		},
+		{
 			name: "success",
 			params: service.LoginParams{
 				AppID:    validAppID,
@@ -469,17 +537,19 @@ func TestAuthService_Login(t *testing.T) {
 			createRefreshToken: func(_ context.Context, _ db.CreateRefreshTokenParams) (db.RefreshToken, error) {
 				return db.RefreshToken{}, nil
 			},
-			wantResult: true,
+			getRolesForUser: noRoles,
+			wantResult:      true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			q := &mockQuerier{
-				getApp:              tt.getApp,
+				getApp:               tt.getApp,
 				getUserByAppAndEmail: tt.getUserByAppAndEmail,
 				createSession:        tt.createSession,
 				createRefreshToken:   tt.createRefreshToken,
+				getRolesForUser:      tt.getRolesForUser,
 			}
 			svc := service.NewAuthService(q, testPrivateKey)
 
@@ -611,6 +681,7 @@ func TestAuthService_RefreshToken(t *testing.T) {
 		verifySession      func(ctx context.Context, id pgtype.UUID) (db.Session, error)
 		revokeRefreshToken func(ctx context.Context, id pgtype.UUID) (db.RefreshToken, error)
 		createRefreshToken func(ctx context.Context, arg db.CreateRefreshTokenParams) (db.RefreshToken, error)
+		getRolesForUser    func(ctx context.Context, userID pgtype.UUID) ([]db.Role, error)
 		wantErr            error
 		wantResult         bool
 	}{
@@ -673,6 +744,26 @@ func TestAuthService_RefreshToken(t *testing.T) {
 			wantErr: errors.New("insert failed"),
 		},
 		{
+			name:     "get_roles_fails",
+			rawToken: "some-token",
+			findRefreshToken: func(_ context.Context, _ string) (db.RefreshToken, error) {
+				return validToken, nil
+			},
+			verifySession: func(_ context.Context, _ pgtype.UUID) (db.Session, error) {
+				return validSession, nil
+			},
+			revokeRefreshToken: func(_ context.Context, _ pgtype.UUID) (db.RefreshToken, error) {
+				return db.RefreshToken{}, nil
+			},
+			createRefreshToken: func(_ context.Context, _ db.CreateRefreshTokenParams) (db.RefreshToken, error) {
+				return db.RefreshToken{}, nil
+			},
+			getRolesForUser: func(_ context.Context, _ pgtype.UUID) ([]db.Role, error) {
+				return nil, errors.New("db error")
+			},
+			wantErr: errors.New("db error"),
+		},
+		{
 			name:     "success",
 			rawToken: "valid-raw-token",
 			findRefreshToken: func(_ context.Context, _ string) (db.RefreshToken, error) {
@@ -687,6 +778,9 @@ func TestAuthService_RefreshToken(t *testing.T) {
 			createRefreshToken: func(_ context.Context, _ db.CreateRefreshTokenParams) (db.RefreshToken, error) {
 				return db.RefreshToken{}, nil
 			},
+			getRolesForUser: func(_ context.Context, _ pgtype.UUID) ([]db.Role, error) {
+				return []db.Role{}, nil
+			},
 			wantResult: true,
 		},
 	}
@@ -698,6 +792,7 @@ func TestAuthService_RefreshToken(t *testing.T) {
 				verifySession:      tt.verifySession,
 				revokeRefreshToken: tt.revokeRefreshToken,
 				createRefreshToken: tt.createRefreshToken,
+				getRolesForUser:    tt.getRolesForUser,
 			}
 			svc := service.NewAuthService(q, testPrivateKey)
 
@@ -1005,6 +1100,597 @@ func TestAuthService_ChangePassword(t *testing.T) {
 
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestAuthService_GetSessions(t *testing.T) {
+	validUserID := "00000000-0000-0000-0000-000000000001"
+	currentSessionID := "03000000000000000000000000000000"
+
+	sessionID1 := pgtype.UUID{Bytes: [16]byte{3}, Valid: true}
+	sessionID2 := pgtype.UUID{Bytes: [16]byte{4}, Valid: true}
+	userID := pgtype.UUID{Bytes: [16]byte{1}, Valid: true}
+	revoked := false
+
+	sessions := []db.Session{
+		{
+			ID:      sessionID1,
+			UserID:  userID,
+			Revoked: &revoked,
+		},
+		{
+			ID:      sessionID2,
+			UserID:  userID,
+			Revoked: &revoked,
+		},
+	}
+
+	tests := []struct {
+		name               string
+		userID             string
+		getSessionsForUser func(ctx context.Context, userID pgtype.UUID) ([]db.Session, error)
+		wantErr            error
+		wantCount          int
+		wantCurrent        int
+	}{
+		{
+			name:    "invalid_user_id",
+			userID:  "not-a-uuid",
+			wantErr: service.ErrInvalidUserID,
+		},
+		{
+			name:   "db_error",
+			userID: validUserID,
+			getSessionsForUser: func(_ context.Context, _ pgtype.UUID) ([]db.Session, error) {
+				return nil, errors.New("db error")
+			},
+			wantErr: errors.New("db error"),
+		},
+		{
+			name:   "empty_sessions",
+			userID: validUserID,
+			getSessionsForUser: func(_ context.Context, _ pgtype.UUID) ([]db.Session, error) {
+				return []db.Session{}, nil
+			},
+			wantCount: 0,
+		},
+		{
+			name:   "success_with_current_marked",
+			userID: validUserID,
+			getSessionsForUser: func(_ context.Context, _ pgtype.UUID) ([]db.Session, error) {
+				return sessions, nil
+			},
+			wantCount:   2,
+			wantCurrent: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &mockQuerier{
+				getSessionsForUser: tt.getSessionsForUser,
+			}
+			svc := service.NewAuthService(q, testPrivateKey)
+
+			result, err := svc.GetSessions(context.Background(), tt.userID, currentSessionID)
+
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Fatalf("expected error %v, got nil", tt.wantErr)
+				}
+				if errors.Is(tt.wantErr, service.ErrInvalidUserID) {
+					if !errors.Is(err, tt.wantErr) {
+						t.Errorf("got error %v, want %v", err, tt.wantErr)
+					}
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(result) != tt.wantCount {
+				t.Errorf("got %d sessions, want %d", len(result), tt.wantCount)
+			}
+			if tt.wantCount > 0 {
+				if !result[tt.wantCurrent].Current {
+					t.Errorf("expected session at index %d to be current", tt.wantCurrent)
+				}
+				if result[1].Current {
+					t.Error("expected session at index 1 to not be current")
+				}
+			}
+		})
+	}
+}
+
+func TestAuthService_RevokeSession(t *testing.T) {
+	validUserID := "00000000-0000-0000-0000-000000000001"
+	validSessionID := "00000000-0000-0000-0000-000000000003"
+
+	tests := []struct {
+		name                          string
+		userID                        string
+		sessionID                     string
+		verifySessionBelongsToUser    func(ctx context.Context, arg db.VerifySessionBelongsToUserParams) (db.Session, error)
+		verifySession                 func(ctx context.Context, id pgtype.UUID) (db.Session, error)
+		revokeRefreshTokensForSession func(ctx context.Context, sessionID pgtype.UUID) error
+		revokeSession                 func(ctx context.Context, id pgtype.UUID) (db.Session, error)
+		wantErr                       error
+	}{
+		{
+			name:      "invalid_user_id",
+			userID:    "not-a-uuid",
+			sessionID: validSessionID,
+			wantErr:   service.ErrInvalidUserID,
+		},
+		{
+			name:      "invalid_session_id",
+			userID:    validUserID,
+			sessionID: "not-a-uuid",
+			wantErr:   service.ErrInvalidSessionID,
+		},
+		{
+			name:      "session_not_found",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			verifySessionBelongsToUser: func(_ context.Context, _ db.VerifySessionBelongsToUserParams) (db.Session, error) {
+				return db.Session{}, pgx.ErrNoRows
+			},
+			verifySession: func(_ context.Context, _ pgtype.UUID) (db.Session, error) {
+				return db.Session{}, pgx.ErrNoRows
+			},
+			wantErr: service.ErrSessionNotFound,
+		},
+		{
+			name:      "session_user_mismatch",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			verifySessionBelongsToUser: func(_ context.Context, _ db.VerifySessionBelongsToUserParams) (db.Session, error) {
+				return db.Session{}, pgx.ErrNoRows
+			},
+			verifySession: func(_ context.Context, _ pgtype.UUID) (db.Session, error) {
+				return db.Session{}, nil
+			},
+			wantErr: service.ErrSessionUserMismatch,
+		},
+		{
+			name:      "db_error_on_verify",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			verifySessionBelongsToUser: func(_ context.Context, _ db.VerifySessionBelongsToUserParams) (db.Session, error) {
+				return db.Session{}, errors.New("db error")
+			},
+			wantErr: errors.New("db error"),
+		},
+		{
+			name:      "revoke_refresh_tokens_fails",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			verifySessionBelongsToUser: func(_ context.Context, _ db.VerifySessionBelongsToUserParams) (db.Session, error) {
+				return db.Session{}, nil
+			},
+			revokeRefreshTokensForSession: func(_ context.Context, _ pgtype.UUID) error {
+				return errors.New("db error")
+			},
+			wantErr: errors.New("db error"),
+		},
+		{
+			name:      "revoke_session_fails",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			verifySessionBelongsToUser: func(_ context.Context, _ db.VerifySessionBelongsToUserParams) (db.Session, error) {
+				return db.Session{}, nil
+			},
+			revokeRefreshTokensForSession: func(_ context.Context, _ pgtype.UUID) error {
+				return nil
+			},
+			revokeSession: func(_ context.Context, _ pgtype.UUID) (db.Session, error) {
+				return db.Session{}, errors.New("db error")
+			},
+			wantErr: errors.New("db error"),
+		},
+		{
+			name:      "success",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			verifySessionBelongsToUser: func(_ context.Context, _ db.VerifySessionBelongsToUserParams) (db.Session, error) {
+				return db.Session{}, nil
+			},
+			revokeRefreshTokensForSession: func(_ context.Context, _ pgtype.UUID) error {
+				return nil
+			},
+			revokeSession: func(_ context.Context, _ pgtype.UUID) (db.Session, error) {
+				return db.Session{}, nil
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &mockQuerier{
+				verifySessionBelongsToUser:    tt.verifySessionBelongsToUser,
+				verifySession:                 tt.verifySession,
+				revokeRefreshTokensForSession: tt.revokeRefreshTokensForSession,
+				revokeSession:                 tt.revokeSession,
+			}
+			svc := service.NewAuthService(q, testPrivateKey)
+
+			err := svc.RevokeSession(context.Background(), tt.userID, tt.sessionID)
+
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Fatalf("expected error %v, got nil", tt.wantErr)
+				}
+				if errors.Is(tt.wantErr, service.ErrInvalidUserID) ||
+					errors.Is(tt.wantErr, service.ErrInvalidSessionID) ||
+					errors.Is(tt.wantErr, service.ErrSessionNotFound) ||
+					errors.Is(tt.wantErr, service.ErrSessionUserMismatch) {
+					if !errors.Is(err, tt.wantErr) {
+						t.Errorf("got error %v, want %v", err, tt.wantErr)
+					}
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func userFound(_ context.Context, _ pgtype.UUID) (db.User, error) {
+	return db.User{}, nil
+}
+
+func roleFound(_ context.Context, _ pgtype.UUID) (db.Role, error) {
+	return db.Role{}, nil
+}
+
+func TestAuthService_AssignRole(t *testing.T) {
+	validUserID := "00000000-0000-0000-0000-000000000001"
+	validRoleID := "00000000-0000-0000-0000-000000000010"
+
+	tests := []struct {
+		name           string
+		params         service.AssignRoleParams
+		getUser        func(ctx context.Context, id pgtype.UUID) (db.User, error)
+		getRole        func(ctx context.Context, id pgtype.UUID) (db.Role, error)
+		insertUserRole func(ctx context.Context, arg db.InsertUserRoleParams) (db.UserRole, error)
+		wantErr        error
+		wantResult     bool
+	}{
+		{
+			name:    "invalid_user_id",
+			params:  service.AssignRoleParams{UserID: "not-a-uuid", RoleID: validRoleID},
+			wantErr: service.ErrInvalidUserID,
+		},
+		{
+			name:   "user_not_found",
+			params: service.AssignRoleParams{UserID: validUserID, RoleID: validRoleID},
+			getUser: func(_ context.Context, _ pgtype.UUID) (db.User, error) {
+				return db.User{}, pgx.ErrNoRows
+			},
+			wantErr: service.ErrUserNotFound,
+		},
+		{
+			name:    "invalid_role_id",
+			params:  service.AssignRoleParams{UserID: validUserID, RoleID: "not-a-uuid"},
+			getUser: userFound,
+			wantErr: service.ErrInvalidRoleID,
+		},
+		{
+			name:   "role_not_found",
+			params: service.AssignRoleParams{UserID: validUserID, RoleID: validRoleID},
+			getUser: userFound,
+			getRole: func(_ context.Context, _ pgtype.UUID) (db.Role, error) {
+				return db.Role{}, pgx.ErrNoRows
+			},
+			wantErr: service.ErrRoleNotFound,
+		},
+		{
+			name:   "role_already_assigned",
+			params: service.AssignRoleParams{UserID: validUserID, RoleID: validRoleID},
+			getUser: userFound,
+			getRole: roleFound,
+			insertUserRole: func(_ context.Context, _ db.InsertUserRoleParams) (db.UserRole, error) {
+				return db.UserRole{}, &pgconn.PgError{Code: "23505"}
+			},
+			wantErr: service.ErrRoleAlreadyAssigned,
+		},
+		{
+			name:   "db_error_on_insert",
+			params: service.AssignRoleParams{UserID: validUserID, RoleID: validRoleID},
+			getUser: userFound,
+			getRole: roleFound,
+			insertUserRole: func(_ context.Context, _ db.InsertUserRoleParams) (db.UserRole, error) {
+				return db.UserRole{}, errors.New("db error")
+			},
+			wantErr: errors.New("db error"),
+		},
+		{
+			name:   "success",
+			params: service.AssignRoleParams{UserID: validUserID, RoleID: validRoleID},
+			getUser: userFound,
+			getRole: roleFound,
+			insertUserRole: func(_ context.Context, _ db.InsertUserRoleParams) (db.UserRole, error) {
+				return db.UserRole{}, nil
+			},
+			wantResult: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &mockQuerier{
+				getUser:        tt.getUser,
+				getRole:        tt.getRole,
+				insertUserRole: tt.insertUserRole,
+			}
+			svc := service.NewAuthService(q, testPrivateKey)
+
+			result, err := svc.AssignRole(context.Background(), tt.params)
+
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Fatalf("expected error %v, got nil", tt.wantErr)
+				}
+				if errors.Is(tt.wantErr, service.ErrInvalidUserID) ||
+					errors.Is(tt.wantErr, service.ErrInvalidRoleID) ||
+					errors.Is(tt.wantErr, service.ErrUserNotFound) ||
+					errors.Is(tt.wantErr, service.ErrRoleNotFound) ||
+					errors.Is(tt.wantErr, service.ErrRoleAlreadyAssigned) {
+					if !errors.Is(err, tt.wantErr) {
+						t.Errorf("got error %v, want %v", err, tt.wantErr)
+					}
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantResult {
+				if result.UserID != validUserID {
+					t.Errorf("got user_id %q, want %q", result.UserID, validUserID)
+				}
+				if result.RoleID != validRoleID {
+					t.Errorf("got role_id %q, want %q", result.RoleID, validRoleID)
+				}
+			}
+		})
+	}
+}
+
+func TestAuthService_RemoveRole(t *testing.T) {
+	validUserID := "00000000-0000-0000-0000-000000000001"
+	validRoleID := "00000000-0000-0000-0000-000000000010"
+
+	tests := []struct {
+		name           string
+		params         service.RemoveRoleParams
+		getUser        func(ctx context.Context, id pgtype.UUID) (db.User, error)
+		getRole        func(ctx context.Context, id pgtype.UUID) (db.Role, error)
+		getUserRole    func(ctx context.Context, arg db.GetUserRoleParams) (db.UserRole, error)
+		deleteUserRole func(ctx context.Context, arg db.DeleteUserRoleParams) error
+		wantErr        error
+		wantResult     bool
+	}{
+		{
+			name:    "invalid_user_id",
+			params:  service.RemoveRoleParams{UserID: "not-a-uuid", RoleID: validRoleID},
+			wantErr: service.ErrInvalidUserID,
+		},
+		{
+			name:   "user_not_found",
+			params: service.RemoveRoleParams{UserID: validUserID, RoleID: validRoleID},
+			getUser: func(_ context.Context, _ pgtype.UUID) (db.User, error) {
+				return db.User{}, pgx.ErrNoRows
+			},
+			wantErr: service.ErrUserNotFound,
+		},
+		{
+			name:    "invalid_role_id",
+			params:  service.RemoveRoleParams{UserID: validUserID, RoleID: "not-a-uuid"},
+			getUser: userFound,
+			wantErr: service.ErrInvalidRoleID,
+		},
+		{
+			name:   "role_not_found",
+			params: service.RemoveRoleParams{UserID: validUserID, RoleID: validRoleID},
+			getUser: userFound,
+			getRole: func(_ context.Context, _ pgtype.UUID) (db.Role, error) {
+				return db.Role{}, pgx.ErrNoRows
+			},
+			wantErr: service.ErrRoleNotFound,
+		},
+		{
+			name:   "role_not_assigned",
+			params: service.RemoveRoleParams{UserID: validUserID, RoleID: validRoleID},
+			getUser: userFound,
+			getRole: roleFound,
+			getUserRole: func(_ context.Context, _ db.GetUserRoleParams) (db.UserRole, error) {
+				return db.UserRole{}, pgx.ErrNoRows
+			},
+			wantErr: service.ErrRoleNotAssigned,
+		},
+		{
+			name:   "db_error_on_delete",
+			params: service.RemoveRoleParams{UserID: validUserID, RoleID: validRoleID},
+			getUser: userFound,
+			getRole: roleFound,
+			getUserRole: func(_ context.Context, _ db.GetUserRoleParams) (db.UserRole, error) {
+				return db.UserRole{}, nil
+			},
+			deleteUserRole: func(_ context.Context, _ db.DeleteUserRoleParams) error {
+				return errors.New("db error")
+			},
+			wantErr: errors.New("db error"),
+		},
+		{
+			name:   "success",
+			params: service.RemoveRoleParams{UserID: validUserID, RoleID: validRoleID},
+			getUser: userFound,
+			getRole: roleFound,
+			getUserRole: func(_ context.Context, _ db.GetUserRoleParams) (db.UserRole, error) {
+				return db.UserRole{}, nil
+			},
+			deleteUserRole: func(_ context.Context, _ db.DeleteUserRoleParams) error {
+				return nil
+			},
+			wantResult: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &mockQuerier{
+				getUser:        tt.getUser,
+				getRole:        tt.getRole,
+				getUserRole:    tt.getUserRole,
+				deleteUserRole: tt.deleteUserRole,
+			}
+			svc := service.NewAuthService(q, testPrivateKey)
+
+			result, err := svc.RemoveRole(context.Background(), tt.params)
+
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Fatalf("expected error %v, got nil", tt.wantErr)
+				}
+				if errors.Is(tt.wantErr, service.ErrInvalidUserID) ||
+					errors.Is(tt.wantErr, service.ErrInvalidRoleID) ||
+					errors.Is(tt.wantErr, service.ErrUserNotFound) ||
+					errors.Is(tt.wantErr, service.ErrRoleNotFound) ||
+					errors.Is(tt.wantErr, service.ErrRoleNotAssigned) {
+					if !errors.Is(err, tt.wantErr) {
+						t.Errorf("got error %v, want %v", err, tt.wantErr)
+					}
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantResult {
+				if result.UserID != validUserID {
+					t.Errorf("got user_id %q, want %q", result.UserID, validUserID)
+				}
+				if result.RoleID != validRoleID {
+					t.Errorf("got role_id %q, want %q", result.RoleID, validRoleID)
+				}
+			}
+		})
+	}
+}
+
+func TestAuthService_GetUserRoles(t *testing.T) {
+	validUserID := "00000000-0000-0000-0000-000000000001"
+
+	roleID1 := pgtype.UUID{Bytes: [16]byte{0x10}, Valid: true}
+	roleID2 := pgtype.UUID{Bytes: [16]byte{0x20}, Valid: true}
+
+	tests := []struct {
+		name            string
+		userID          string
+		getUser         func(ctx context.Context, id pgtype.UUID) (db.User, error)
+		getRolesForUser func(ctx context.Context, userID pgtype.UUID) ([]db.Role, error)
+		wantErr         error
+		wantCount       int
+	}{
+		{
+			name:    "invalid_user_id",
+			userID:  "not-a-uuid",
+			wantErr: service.ErrInvalidUserID,
+		},
+		{
+			name:   "user_not_found",
+			userID: validUserID,
+			getUser: func(_ context.Context, _ pgtype.UUID) (db.User, error) {
+				return db.User{}, pgx.ErrNoRows
+			},
+			wantErr: service.ErrUserNotFound,
+		},
+		{
+			name:   "db_error_on_get_user",
+			userID: validUserID,
+			getUser: func(_ context.Context, _ pgtype.UUID) (db.User, error) {
+				return db.User{}, errors.New("db error")
+			},
+			wantErr: errors.New("db error"),
+		},
+		{
+			name:    "db_error_on_get_roles",
+			userID:  validUserID,
+			getUser: userFound,
+			getRolesForUser: func(_ context.Context, _ pgtype.UUID) ([]db.Role, error) {
+				return nil, errors.New("db error")
+			},
+			wantErr: errors.New("db error"),
+		},
+		{
+			name:    "empty_roles",
+			userID:  validUserID,
+			getUser: userFound,
+			getRolesForUser: func(_ context.Context, _ pgtype.UUID) ([]db.Role, error) {
+				return []db.Role{}, nil
+			},
+			wantCount: 0,
+		},
+		{
+			name:    "success",
+			userID:  validUserID,
+			getUser: userFound,
+			getRolesForUser: func(_ context.Context, _ pgtype.UUID) ([]db.Role, error) {
+				return []db.Role{
+					{ID: roleID1, Name: "admin"},
+					{ID: roleID2, Name: "editor"},
+				}, nil
+			},
+			wantCount: 2,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q := &mockQuerier{
+				getUser:         tt.getUser,
+				getRolesForUser: tt.getRolesForUser,
+			}
+			svc := service.NewAuthService(q, testPrivateKey)
+
+			result, err := svc.GetUserRoles(context.Background(), tt.userID)
+
+			if tt.wantErr != nil {
+				if err == nil {
+					t.Fatalf("expected error %v, got nil", tt.wantErr)
+				}
+				if errors.Is(tt.wantErr, service.ErrInvalidUserID) ||
+					errors.Is(tt.wantErr, service.ErrUserNotFound) {
+					if !errors.Is(err, tt.wantErr) {
+						t.Errorf("got error %v, want %v", err, tt.wantErr)
+					}
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(result) != tt.wantCount {
+				t.Errorf("got %d roles, want %d", len(result), tt.wantCount)
+			}
+			if tt.wantCount == 2 {
+				if result[0].RoleName != "admin" {
+					t.Errorf("got role_name %q, want %q", result[0].RoleName, "admin")
+				}
+				if result[1].RoleName != "editor" {
+					t.Errorf("got role_name %q, want %q", result[1].RoleName, "editor")
+				}
 			}
 		})
 	}

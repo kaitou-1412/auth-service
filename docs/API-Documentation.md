@@ -127,9 +127,11 @@ Authenticates a user and returns access and refresh tokens.
 3. Verifies the password against the stored bcrypt hash. Returns `invalid email or password` if wrong.
 4. Creates a new session (24h expiry) with the caller's `User-Agent` and IP address.
 5. Generates a cryptographically random refresh token (32 bytes), stores its SHA-256 hash (30-day expiry).
-6. Generates a JWT access token (RS256, 15-minute expiry) with claims:
+6. Fetches the user's assigned roles from the database.
+7. Generates a JWT access token (RS256, 15-minute expiry) with claims:
    - `sub`: user ID (hex-encoded UUID)
    - `session_id`: session ID (hex-encoded UUID)
+   - `roles`: list of role names (empty array if no roles assigned)
    - `iat`: issued-at timestamp
    - `exp`: expiration timestamp
 
@@ -179,7 +181,8 @@ Rotates the refresh token and issues a new access token.
 2. Verifies the associated session is not revoked and not expired.
 3. Revokes the old refresh token (sets `revoked = true`).
 4. Creates a new refresh token linked to the same session and user.
-5. Generates a new JWT access token (RS256, 15-minute expiry).
+5. Fetches the user's current roles from the database.
+6. Generates a new JWT access token (RS256, 15-minute expiry) with the `roles` claim reflecting the user's current role assignments.
 
 **Response:**
 
@@ -483,9 +486,18 @@ Assigns a role to a user.
 |-----------|--------|----------|-----------------------|
 | `role_id` | string | Yes      | UUID of the role to assign |
 
+**Validations (in order):**
+
+1. `user_id` must be a valid UUID format.
+2. User with the given `user_id` must exist in the database.
+3. `role_id` must be present in the request body and be a valid UUID format.
+4. Role with the given `role_id` must exist in the database.
+5. The role must not already be assigned to the user.
+
 **Business Logic:**
 
-1. Inserts a record into the `user_roles` table linking the user and role.
+1. Validates user and role existence.
+2. Inserts a record into the `user_roles` table linking the user and role.
 
 **Response:**
 
@@ -500,11 +512,16 @@ Assigns a role to a user.
 
 **Errors:**
 
-| Status | Condition                    | Error Message                   |
-|--------|------------------------------|---------------------------------|
-| 400    | Invalid user_id or role_id   | `invalid user_id` / `invalid role_id` |
+| Status | Condition                    | Error Message                               |
+|--------|------------------------------|---------------------------------------------|
+| 400    | Missing role_id              | `role_id is required`                       |
+| 400    | Invalid user_id format       | `invalid user_id`                           |
+| 400    | Invalid role_id format       | `invalid role_id`                           |
 | 401    | Missing/invalid/expired token| `missing authorization header` / `invalid or expired token` |
-| 500    | Internal error               | `internal server error`         |
+| 404    | User not found               | `user not found`                            |
+| 404    | Role not found               | `role not found`                            |
+| 409    | Role already assigned        | `role already assigned to this user`        |
+| 500    | Internal error               | `internal server error`                     |
 
 ---
 
@@ -529,9 +546,18 @@ Removes a role from a user.
 |-----------------|----------|--------------------------|
 | `Authorization` | Yes      | `Bearer <access_token>` |
 
+**Validations (in order):**
+
+1. `user_id` must be a valid UUID format.
+2. User with the given `user_id` must exist in the database.
+3. `role_id` must be a valid UUID format.
+4. Role with the given `role_id` must exist in the database.
+5. The role must be currently assigned to the user.
+
 **Business Logic:**
 
-1. Deletes the record from the `user_roles` table matching the user and role.
+1. Validates user, role, and assignment existence.
+2. Deletes the record from the `user_roles` table matching the user and role.
 
 **Response:**
 
@@ -546,11 +572,15 @@ Removes a role from a user.
 
 **Errors:**
 
-| Status | Condition                    | Error Message                   |
-|--------|------------------------------|---------------------------------|
-| 400    | Invalid user_id or role_id   | `invalid user_id` / `invalid role_id` |
+| Status | Condition                    | Error Message                               |
+|--------|------------------------------|---------------------------------------------|
+| 400    | Invalid user_id format       | `invalid user_id`                           |
+| 400    | Invalid role_id format       | `invalid role_id`                           |
 | 401    | Missing/invalid/expired token| `missing authorization header` / `invalid or expired token` |
-| 500    | Internal error               | `internal server error`         |
+| 404    | User not found               | `user not found`                            |
+| 404    | Role not found               | `role not found`                            |
+| 404    | Role not assigned to user    | `role not assigned to this user`            |
+| 500    | Internal error               | `internal server error`                     |
 
 ---
 

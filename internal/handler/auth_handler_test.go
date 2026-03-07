@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/kaitou-1412/auth-service/internal/db/sqlc"
 	"github.com/kaitou-1412/auth-service/internal/handler"
@@ -23,6 +25,11 @@ type mockAuthService struct {
 	logoutAllFn      func(ctx context.Context, userID string) error
 	changePasswordFn func(ctx context.Context, params service.ChangePasswordParams) error
 	refreshTokenFn   func(ctx context.Context, rawToken string) (service.RefreshTokenResult, error)
+	getSessionsFn    func(ctx context.Context, userID, currentSessionID string) ([]service.SessionInfo, error)
+	revokeSessionFn  func(ctx context.Context, userID, sessionID string) error
+	assignRoleFn     func(ctx context.Context, params service.AssignRoleParams) (service.AssignRoleResult, error)
+	removeRoleFn     func(ctx context.Context, params service.RemoveRoleParams) (service.RemoveRoleResult, error)
+	getUserRolesFn   func(ctx context.Context, userID string) ([]service.RoleInfo, error)
 }
 
 func (m *mockAuthService) Signup(ctx context.Context, params service.SignupParams) (db.User, error) {
@@ -47,6 +54,26 @@ func (m *mockAuthService) ChangePassword(ctx context.Context, params service.Cha
 
 func (m *mockAuthService) RefreshToken(ctx context.Context, rawToken string) (service.RefreshTokenResult, error) {
 	return m.refreshTokenFn(ctx, rawToken)
+}
+
+func (m *mockAuthService) GetSessions(ctx context.Context, userID, currentSessionID string) ([]service.SessionInfo, error) {
+	return m.getSessionsFn(ctx, userID, currentSessionID)
+}
+
+func (m *mockAuthService) RevokeSession(ctx context.Context, userID, sessionID string) error {
+	return m.revokeSessionFn(ctx, userID, sessionID)
+}
+
+func (m *mockAuthService) AssignRole(ctx context.Context, params service.AssignRoleParams) (service.AssignRoleResult, error) {
+	return m.assignRoleFn(ctx, params)
+}
+
+func (m *mockAuthService) RemoveRole(ctx context.Context, params service.RemoveRoleParams) (service.RemoveRoleResult, error) {
+	return m.removeRoleFn(ctx, params)
+}
+
+func (m *mockAuthService) GetUserRoles(ctx context.Context, userID string) ([]service.RoleInfo, error) {
+	return m.getUserRolesFn(ctx, userID)
 }
 
 func newSignupRequest(t *testing.T, body string) *http.Request {
@@ -683,6 +710,604 @@ func TestAuthHandler_RefreshToken(t *testing.T) {
 				}
 				if resp["token_type"] != "Bearer" {
 					t.Errorf("got token_type %v, want Bearer", resp["token_type"])
+				}
+			}
+		})
+	}
+}
+
+func newGetSessionsRequest(t *testing.T, userID, sessionID string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/v1/auth/sessions", nil)
+	ctx := context.WithValue(req.Context(), middleware.ContextKeyUserID, userID)
+	ctx = context.WithValue(ctx, middleware.ContextKeySessionID, sessionID)
+	return req.WithContext(ctx)
+}
+
+func TestAuthHandler_GetSessions(t *testing.T) {
+	validUserID := "00000000000000000000000000000001"
+	validSessionID := "00000000000000000000000000000003"
+
+	revoked := false
+	successSessions := []service.SessionInfo{
+		{
+			SessionID: "00000000-0000-0000-0000-000000000003",
+			Revoked:   &revoked,
+			Current:   true,
+		},
+		{
+			SessionID: "00000000-0000-0000-0000-000000000004",
+			Revoked:   &revoked,
+			Current:   false,
+		},
+	}
+
+	tests := []struct {
+		name          string
+		userID        string
+		sessionID     string
+		getSessionsFn func(ctx context.Context, userID, currentSessionID string) ([]service.SessionInfo, error)
+		wantStatus    int
+		wantErrMsg    string
+	}{
+		{
+			name:      "service_error",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			getSessionsFn: func(_ context.Context, _, _ string) ([]service.SessionInfo, error) {
+				return nil, errors.New("db error")
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantErrMsg: "internal server error",
+		},
+		{
+			name:      "success",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			getSessionsFn: func(_ context.Context, _, _ string) ([]service.SessionInfo, error) {
+				return successSessions, nil
+			},
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &mockAuthService{getSessionsFn: tt.getSessionsFn}
+			h := handler.NewAuthHandler(svc)
+
+			rr := httptest.NewRecorder()
+			h.GetSessions(rr, newGetSessionsRequest(t, tt.userID, tt.sessionID))
+
+			if rr.Code != tt.wantStatus {
+				t.Errorf("got status %d, want %d", rr.Code, tt.wantStatus)
+			}
+
+			if tt.wantErrMsg != "" {
+				var resp map[string]string
+				if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if resp["error"] != tt.wantErrMsg {
+					t.Errorf("got error %q, want %q", resp["error"], tt.wantErrMsg)
+				}
+			}
+
+			if tt.wantStatus == http.StatusOK {
+				var resp map[string]any
+				if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal success response: %v", err)
+				}
+				sessions, ok := resp["sessions"].([]any)
+				if !ok {
+					t.Fatal("expected sessions array in response")
+				}
+				if len(sessions) != 2 {
+					t.Errorf("got %d sessions, want 2", len(sessions))
+				}
+			}
+		})
+	}
+}
+
+func newRevokeSessionRequest(t *testing.T, userID, sessionID string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, "/v1/auth/sessions/"+sessionID, nil)
+	ctx := context.WithValue(req.Context(), middleware.ContextKeyUserID, userID)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("session_id", sessionID)
+	ctx = context.WithValue(ctx, chi.RouteCtxKey, rctx)
+	return req.WithContext(ctx)
+}
+
+func TestAuthHandler_RevokeSession(t *testing.T) {
+	validUserID := "00000000000000000000000000000001"
+	validSessionID := "00000000-0000-0000-0000-000000000003"
+
+	tests := []struct {
+		name            string
+		userID          string
+		sessionID       string
+		revokeSessionFn func(ctx context.Context, userID, sessionID string) error
+		wantStatus      int
+		wantErrMsg      string
+	}{
+		{
+			name:      "invalid_session_id",
+			userID:    validUserID,
+			sessionID: "bad-id",
+			revokeSessionFn: func(_ context.Context, _, _ string) error {
+				return service.ErrInvalidSessionID
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErrMsg: service.ErrInvalidSessionID.Error(),
+		},
+		{
+			name:      "session_not_found",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			revokeSessionFn: func(_ context.Context, _, _ string) error {
+				return service.ErrSessionNotFound
+			},
+			wantStatus: http.StatusUnauthorized,
+			wantErrMsg: service.ErrSessionNotFound.Error(),
+		},
+		{
+			name:      "session_user_mismatch",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			revokeSessionFn: func(_ context.Context, _, _ string) error {
+				return service.ErrSessionUserMismatch
+			},
+			wantStatus: http.StatusForbidden,
+			wantErrMsg: service.ErrSessionUserMismatch.Error(),
+		},
+		{
+			name:      "internal_error",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			revokeSessionFn: func(_ context.Context, _, _ string) error {
+				return errors.New("db error")
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantErrMsg: "internal server error",
+		},
+		{
+			name:      "success",
+			userID:    validUserID,
+			sessionID: validSessionID,
+			revokeSessionFn: func(_ context.Context, _, _ string) error {
+				return nil
+			},
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &mockAuthService{revokeSessionFn: tt.revokeSessionFn}
+			h := handler.NewAuthHandler(svc)
+
+			rr := httptest.NewRecorder()
+			h.RevokeSession(rr, newRevokeSessionRequest(t, tt.userID, tt.sessionID))
+
+			if rr.Code != tt.wantStatus {
+				t.Errorf("got status %d, want %d", rr.Code, tt.wantStatus)
+			}
+
+			if tt.wantErrMsg != "" {
+				var resp map[string]string
+				if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if resp["error"] != tt.wantErrMsg {
+					t.Errorf("got error %q, want %q", resp["error"], tt.wantErrMsg)
+				}
+			}
+
+			if tt.wantStatus == http.StatusOK {
+				var resp map[string]string
+				if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal success response: %v", err)
+				}
+				if resp["message"] != "session revoked successfully" {
+					t.Errorf("got message %q, want %q", resp["message"], "session revoked successfully")
+				}
+			}
+		})
+	}
+}
+
+func newAssignRoleRequest(t *testing.T, body string, userID string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/v1/auth/users/"+userID+"/roles", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("user_id", userID)
+	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
+	return req.WithContext(ctx)
+}
+
+func TestAuthHandler_AssignRole(t *testing.T) {
+	validUserID := "00000000-0000-0000-0000-000000000001"
+	validRoleID := "00000000-0000-0000-0000-000000000010"
+
+	tests := []struct {
+		name         string
+		body         string
+		userID       string
+		assignRoleFn func(ctx context.Context, params service.AssignRoleParams) (service.AssignRoleResult, error)
+		wantStatus   int
+		wantErrMsg   string
+	}{
+		{
+			name:       "invalid_json",
+			body:       `{invalid}`,
+			userID:     validUserID,
+			wantStatus: http.StatusBadRequest,
+			wantErrMsg: "invalid request body",
+		},
+		{
+			name:       "missing_role_id",
+			body:       `{}`,
+			userID:     validUserID,
+			wantStatus: http.StatusBadRequest,
+			wantErrMsg: "role_id is required",
+		},
+		{
+			name:   "invalid_user_id",
+			body:   `{"role_id":"` + validRoleID + `"}`,
+			userID: "bad-id",
+			assignRoleFn: func(_ context.Context, _ service.AssignRoleParams) (service.AssignRoleResult, error) {
+				return service.AssignRoleResult{}, service.ErrInvalidUserID
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErrMsg: service.ErrInvalidUserID.Error(),
+		},
+		{
+			name:   "invalid_role_id",
+			body:   `{"role_id":"bad-id"}`,
+			userID: validUserID,
+			assignRoleFn: func(_ context.Context, _ service.AssignRoleParams) (service.AssignRoleResult, error) {
+				return service.AssignRoleResult{}, service.ErrInvalidRoleID
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErrMsg: service.ErrInvalidRoleID.Error(),
+		},
+		{
+			name:   "user_not_found",
+			body:   `{"role_id":"` + validRoleID + `"}`,
+			userID: validUserID,
+			assignRoleFn: func(_ context.Context, _ service.AssignRoleParams) (service.AssignRoleResult, error) {
+				return service.AssignRoleResult{}, service.ErrUserNotFound
+			},
+			wantStatus: http.StatusNotFound,
+			wantErrMsg: service.ErrUserNotFound.Error(),
+		},
+		{
+			name:   "role_not_found",
+			body:   `{"role_id":"` + validRoleID + `"}`,
+			userID: validUserID,
+			assignRoleFn: func(_ context.Context, _ service.AssignRoleParams) (service.AssignRoleResult, error) {
+				return service.AssignRoleResult{}, service.ErrRoleNotFound
+			},
+			wantStatus: http.StatusNotFound,
+			wantErrMsg: service.ErrRoleNotFound.Error(),
+		},
+		{
+			name:   "role_already_assigned",
+			body:   `{"role_id":"` + validRoleID + `"}`,
+			userID: validUserID,
+			assignRoleFn: func(_ context.Context, _ service.AssignRoleParams) (service.AssignRoleResult, error) {
+				return service.AssignRoleResult{}, service.ErrRoleAlreadyAssigned
+			},
+			wantStatus: http.StatusConflict,
+			wantErrMsg: service.ErrRoleAlreadyAssigned.Error(),
+		},
+		{
+			name:   "internal_error",
+			body:   `{"role_id":"` + validRoleID + `"}`,
+			userID: validUserID,
+			assignRoleFn: func(_ context.Context, _ service.AssignRoleParams) (service.AssignRoleResult, error) {
+				return service.AssignRoleResult{}, errors.New("db error")
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantErrMsg: "internal server error",
+		},
+		{
+			name:   "success",
+			body:   `{"role_id":"` + validRoleID + `"}`,
+			userID: validUserID,
+			assignRoleFn: func(_ context.Context, _ service.AssignRoleParams) (service.AssignRoleResult, error) {
+				return service.AssignRoleResult{UserID: validUserID, RoleID: validRoleID}, nil
+			},
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &mockAuthService{assignRoleFn: tt.assignRoleFn}
+			h := handler.NewAuthHandler(svc)
+
+			rr := httptest.NewRecorder()
+			h.AssignRole(rr, newAssignRoleRequest(t, tt.body, tt.userID))
+
+			if rr.Code != tt.wantStatus {
+				t.Errorf("got status %d, want %d", rr.Code, tt.wantStatus)
+			}
+
+			if tt.wantErrMsg != "" {
+				var resp map[string]string
+				if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if resp["error"] != tt.wantErrMsg {
+					t.Errorf("got error %q, want %q", resp["error"], tt.wantErrMsg)
+				}
+			}
+
+			if tt.wantStatus == http.StatusOK {
+				var resp map[string]string
+				if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal success response: %v", err)
+				}
+				if resp["user_id"] != validUserID {
+					t.Errorf("got user_id %q, want %q", resp["user_id"], validUserID)
+				}
+				if resp["role_id"] != validRoleID {
+					t.Errorf("got role_id %q, want %q", resp["role_id"], validRoleID)
+				}
+			}
+		})
+	}
+}
+
+func newGetUserRolesRequest(t *testing.T, userID string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/v1/auth/users/"+userID+"/roles", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("user_id", userID)
+	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
+	return req.WithContext(ctx)
+}
+
+func TestAuthHandler_GetUserRoles(t *testing.T) {
+	validUserID := "00000000-0000-0000-0000-000000000001"
+
+	tests := []struct {
+		name           string
+		userID         string
+		getUserRolesFn func(ctx context.Context, userID string) ([]service.RoleInfo, error)
+		wantStatus     int
+		wantErrMsg     string
+	}{
+		{
+			name:   "invalid_user_id",
+			userID: "bad-id",
+			getUserRolesFn: func(_ context.Context, _ string) ([]service.RoleInfo, error) {
+				return nil, service.ErrInvalidUserID
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErrMsg: service.ErrInvalidUserID.Error(),
+		},
+		{
+			name:   "user_not_found",
+			userID: validUserID,
+			getUserRolesFn: func(_ context.Context, _ string) ([]service.RoleInfo, error) {
+				return nil, service.ErrUserNotFound
+			},
+			wantStatus: http.StatusNotFound,
+			wantErrMsg: service.ErrUserNotFound.Error(),
+		},
+		{
+			name:   "internal_error",
+			userID: validUserID,
+			getUserRolesFn: func(_ context.Context, _ string) ([]service.RoleInfo, error) {
+				return nil, errors.New("db error")
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantErrMsg: "internal server error",
+		},
+		{
+			name:   "success_empty",
+			userID: validUserID,
+			getUserRolesFn: func(_ context.Context, _ string) ([]service.RoleInfo, error) {
+				return []service.RoleInfo{}, nil
+			},
+			wantStatus: http.StatusOK,
+		},
+		{
+			name:   "success_with_roles",
+			userID: validUserID,
+			getUserRolesFn: func(_ context.Context, _ string) ([]service.RoleInfo, error) {
+				return []service.RoleInfo{
+					{RoleID: "00000000-0000-0000-0000-000000000010", RoleName: "admin"},
+					{RoleID: "00000000-0000-0000-0000-000000000020", RoleName: "editor"},
+				}, nil
+			},
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &mockAuthService{getUserRolesFn: tt.getUserRolesFn}
+			h := handler.NewAuthHandler(svc)
+
+			rr := httptest.NewRecorder()
+			h.GetUserRoles(rr, newGetUserRolesRequest(t, tt.userID))
+
+			if rr.Code != tt.wantStatus {
+				t.Errorf("got status %d, want %d", rr.Code, tt.wantStatus)
+			}
+
+			if tt.wantErrMsg != "" {
+				var resp map[string]string
+				if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if resp["error"] != tt.wantErrMsg {
+					t.Errorf("got error %q, want %q", resp["error"], tt.wantErrMsg)
+				}
+			}
+
+			if tt.wantStatus == http.StatusOK {
+				var resp map[string]any
+				if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal success response: %v", err)
+				}
+				if resp["user_id"] != tt.userID {
+					t.Errorf("got user_id %v, want %v", resp["user_id"], tt.userID)
+				}
+				roles, ok := resp["roles"].([]any)
+				if !ok {
+					t.Fatal("expected roles array in response")
+				}
+				if tt.name == "success_with_roles" {
+					if len(roles) != 2 {
+						t.Errorf("got %d roles, want 2", len(roles))
+					}
+					first := roles[0].(map[string]any)
+					if first["role_name"] != "admin" {
+						t.Errorf("got role_name %v, want admin", first["role_name"])
+					}
+				}
+				if tt.name == "success_empty" {
+					if len(roles) != 0 {
+						t.Errorf("got %d roles, want 0", len(roles))
+					}
+				}
+			}
+		})
+	}
+}
+
+func newRemoveRoleRequest(t *testing.T, userID, roleID string) *http.Request {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, "/v1/auth/users/"+userID+"/roles/"+roleID, nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("user_id", userID)
+	rctx.URLParams.Add("role_id", roleID)
+	ctx := context.WithValue(req.Context(), chi.RouteCtxKey, rctx)
+	return req.WithContext(ctx)
+}
+
+func TestAuthHandler_RemoveRole(t *testing.T) {
+	validUserID := "00000000-0000-0000-0000-000000000001"
+	validRoleID := "00000000-0000-0000-0000-000000000010"
+
+	tests := []struct {
+		name         string
+		userID       string
+		roleID       string
+		removeRoleFn func(ctx context.Context, params service.RemoveRoleParams) (service.RemoveRoleResult, error)
+		wantStatus   int
+		wantErrMsg   string
+	}{
+		{
+			name:   "invalid_user_id",
+			userID: "bad-id",
+			roleID: validRoleID,
+			removeRoleFn: func(_ context.Context, _ service.RemoveRoleParams) (service.RemoveRoleResult, error) {
+				return service.RemoveRoleResult{}, service.ErrInvalidUserID
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErrMsg: service.ErrInvalidUserID.Error(),
+		},
+		{
+			name:   "user_not_found",
+			userID: validUserID,
+			roleID: validRoleID,
+			removeRoleFn: func(_ context.Context, _ service.RemoveRoleParams) (service.RemoveRoleResult, error) {
+				return service.RemoveRoleResult{}, service.ErrUserNotFound
+			},
+			wantStatus: http.StatusNotFound,
+			wantErrMsg: service.ErrUserNotFound.Error(),
+		},
+		{
+			name:   "invalid_role_id",
+			userID: validUserID,
+			roleID: "bad-id",
+			removeRoleFn: func(_ context.Context, _ service.RemoveRoleParams) (service.RemoveRoleResult, error) {
+				return service.RemoveRoleResult{}, service.ErrInvalidRoleID
+			},
+			wantStatus: http.StatusBadRequest,
+			wantErrMsg: service.ErrInvalidRoleID.Error(),
+		},
+		{
+			name:   "role_not_found",
+			userID: validUserID,
+			roleID: validRoleID,
+			removeRoleFn: func(_ context.Context, _ service.RemoveRoleParams) (service.RemoveRoleResult, error) {
+				return service.RemoveRoleResult{}, service.ErrRoleNotFound
+			},
+			wantStatus: http.StatusNotFound,
+			wantErrMsg: service.ErrRoleNotFound.Error(),
+		},
+		{
+			name:   "role_not_assigned",
+			userID: validUserID,
+			roleID: validRoleID,
+			removeRoleFn: func(_ context.Context, _ service.RemoveRoleParams) (service.RemoveRoleResult, error) {
+				return service.RemoveRoleResult{}, service.ErrRoleNotAssigned
+			},
+			wantStatus: http.StatusNotFound,
+			wantErrMsg: service.ErrRoleNotAssigned.Error(),
+		},
+		{
+			name:   "internal_error",
+			userID: validUserID,
+			roleID: validRoleID,
+			removeRoleFn: func(_ context.Context, _ service.RemoveRoleParams) (service.RemoveRoleResult, error) {
+				return service.RemoveRoleResult{}, errors.New("db error")
+			},
+			wantStatus: http.StatusInternalServerError,
+			wantErrMsg: "internal server error",
+		},
+		{
+			name:   "success",
+			userID: validUserID,
+			roleID: validRoleID,
+			removeRoleFn: func(_ context.Context, _ service.RemoveRoleParams) (service.RemoveRoleResult, error) {
+				return service.RemoveRoleResult{UserID: validUserID, RoleID: validRoleID}, nil
+			},
+			wantStatus: http.StatusOK,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := &mockAuthService{removeRoleFn: tt.removeRoleFn}
+			h := handler.NewAuthHandler(svc)
+
+			rr := httptest.NewRecorder()
+			h.RemoveRole(rr, newRemoveRoleRequest(t, tt.userID, tt.roleID))
+
+			if rr.Code != tt.wantStatus {
+				t.Errorf("got status %d, want %d", rr.Code, tt.wantStatus)
+			}
+
+			if tt.wantErrMsg != "" {
+				var resp map[string]string
+				if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal response: %v", err)
+				}
+				if resp["error"] != tt.wantErrMsg {
+					t.Errorf("got error %q, want %q", resp["error"], tt.wantErrMsg)
+				}
+			}
+
+			if tt.wantStatus == http.StatusOK {
+				var resp map[string]string
+				if err := json.Unmarshal(rr.Body.Bytes(), &resp); err != nil {
+					t.Fatalf("failed to unmarshal success response: %v", err)
+				}
+				if resp["user_id"] != validUserID {
+					t.Errorf("got user_id %q, want %q", resp["user_id"], validUserID)
+				}
+				if resp["role_id"] != validRoleID {
+					t.Errorf("got role_id %q, want %q", resp["role_id"], validRoleID)
 				}
 			}
 		})

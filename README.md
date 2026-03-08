@@ -116,15 +116,35 @@ make dev-watch
 
 ## Architecture
 
+Example: multiple apps share a single auth-service instance.
+
 ```
-┌──────────────┐     ┌─────────────┐
-│ auth-service │────▶│   auth-db   │
-│   (Go API)   │     │ (PostgreSQL)│
-└──────────────┘     └─────────────┘
-       │
-       ├─ ConfigMap (env vars)
-       └─ Secret (RSA keys mounted at /keys)
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│  E-Commerce  │  │  Admin Panel │  │  Mobile App  │
+│   Service    │  │   Service    │  │   Backend    │
+│              │  │              │  │              │
+│ permissions  │  │ permissions  │  │ permissions  │
+│    table     │  │    table     │  │    table     │
+└──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+       │                 │                 │
+       │    JWT verify using public key    │
+       │    + authz via own permissions    │
+       │    No API call to auth-service    │
+       │                 │                 │
+       └─────────────────┼─────────────────┘
+                         │
+               signup/login/refresh
+                         │
+                 ┌───────▼──────┐     ┌─────────────┐
+                 │ auth-service │────▶│   auth-db   │
+                 │   (Go API)   │     │ (PostgreSQL)│
+                 └──────────────┘     └─────────────┘
+                        │
+                        ├─ ConfigMap (env vars)
+                        └─ Secret (RSA keys mounted at /keys)
 ```
+
+Apps and roles must be registered in `auth-db` manually before users can sign up or log in. Each consuming service maintains its own permissions table to map roles (from the JWT claims) to fine-grained permissions, handling authorization independently.
 
 Request flow:
 

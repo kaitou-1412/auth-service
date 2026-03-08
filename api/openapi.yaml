@@ -11,7 +11,12 @@ servers:
 
 tags:
   - name: Health
-  - name: Auth
+  - name: Authentication
+  - name: Token Management
+  - name: Logout
+  - name: Session Management
+  - name: Password Management
+  - name: Role Management
 
 paths:
   /v1/health:
@@ -31,7 +36,7 @@ paths:
     post:
       summary: Sign up a new user
       operationId: signup
-      tags: [Auth]
+      tags: [Authentication]
       description: |
         Registers a new user for a given app.
 
@@ -115,7 +120,7 @@ paths:
     post:
       summary: Authenticate user and create session
       operationId: login
-      tags: [Auth]
+      tags: [Authentication]
       description: |
         Authenticates a user and returns access and refresh tokens.
 
@@ -192,7 +197,7 @@ paths:
     post:
       summary: Rotate refresh token and issue new access token
       operationId: refreshToken
-      tags: [Auth]
+      tags: [Token Management]
       description: |
         Rotates the refresh token and issues a new access token.
 
@@ -253,7 +258,7 @@ paths:
     post:
       summary: Logout from current session
       operationId: logout
-      tags: [Auth]
+      tags: [Logout]
       description: |
         Revokes the current session and its associated refresh tokens.
         The session ID is extracted from the JWT access token by the auth middleware.
@@ -295,7 +300,7 @@ paths:
     post:
       summary: Logout from all devices
       operationId: logoutAll
-      tags: [Auth]
+      tags: [Logout]
       description: |
         Logs the user out from all devices by revoking all sessions and refresh tokens.
         The user ID is extracted from the JWT access token by the auth middleware.
@@ -329,7 +334,7 @@ paths:
     post:
       summary: Change password
       operationId: changePassword
-      tags: [Auth]
+      tags: [Password Management]
       description: |
         Changes the password for the authenticated user. Revokes all existing sessions
         and refresh tokens after the change.
@@ -417,7 +422,7 @@ paths:
     get:
       summary: Get all roles assigned to a user
       operationId: getUserRoles
-      tags: [Auth]
+      tags: [Role Management]
       description: |
         Returns all roles currently assigned to the specified user.
       security:
@@ -470,7 +475,7 @@ paths:
     post:
       summary: Assign a role to a user
       operationId: assignRole
-      tags: [Auth]
+      tags: [Role Management]
       description: |
         Assigns a role to a user by inserting a record into the `user_roles` table.
       security:
@@ -554,7 +559,7 @@ paths:
     delete:
       summary: Remove a role from a user
       operationId: removeRole
-      tags: [Auth]
+      tags: [Role Management]
       description: |
         Removes a role from a user by deleting the record from the `user_roles` table.
       security:
@@ -629,7 +634,7 @@ paths:
     delete:
       summary: Revoke a specific session
       operationId: revokeSession
-      tags: [Auth]
+      tags: [Session Management]
       description: |
         Revokes a specific session and its associated refresh tokens.
         The session must belong to the authenticated user.
@@ -695,7 +700,7 @@ paths:
     get:
       summary: List all sessions for the authenticated user
       operationId: getSessions
-      tags: [Auth]
+      tags: [Session Management]
       description: |
         Returns all sessions for the authenticated user, sorted by `created_at DESC`.
         The session matching the current access token is marked with `"current": true`.

@@ -1,6 +1,6 @@
 # Makefile for Auth Service Development
 
-.PHONY: help build restart deploy dev clean logs status test unit-test coverage port-forward port-forward-bg port-forward-db-bg stop-port-forward dev-watch describe shell db-shell minikube-status minikube-dashboard generate-keys apply-keys sqlc-generate
+.PHONY: help build restart restart-all deploy dev clean logs status test unit-test coverage port-forward port-forward-bg port-forward-db-bg stop-port-forward dev-watch describe shell db-shell minikube-status minikube-dashboard generate-keys apply-keys sqlc-generate
 
 # Variables
 IMAGE_NAME := auth-service
@@ -24,9 +24,21 @@ restart: ## Restart auth-service deployment only (not database)
 	echo "Waiting for rollout to complete..." && \
 	(kubectl rollout status deployment auth-service || echo "Rollout interrupted or failed")
 
-deploy: build apply-keys apply restart ## Deploy code changes (build inside minikube + apply manifests + restart)
+restart-all: ## Restart both auth-db and auth-service deployments
+	@echo "Restarting auth-db deployment..."; \
+	kubectl rollout restart deployment auth-db && \
+	echo "Waiting for auth-db rollout..." && \
+	(kubectl rollout status deployment auth-db || echo "Rollout interrupted or failed") && \
+	echo "✓ Auth-db deployment restarted" && \
+	echo "Restarting auth-service deployment..."; \
+	kubectl rollout restart deployment auth-service && \
+	echo "Waiting for auth-service rollout..." && \
+	(kubectl rollout status deployment auth-service || echo "Rollout interrupted or failed") && \
+	echo "✓ Auth-service deployment restarted"
+
+deploy: build apply-keys apply restart-all ## Deploy code changes (build inside minikube + apply manifests + restart all)
 	@echo ""; \
-	echo "✓ Deployment complete! (auth-service updated, database unchanged)"; \
+	echo "✓ Deployment complete! (auth-service and auth-db restarted)"; \
 	echo "Run 'make dev-watch' to watch logs and enable port-forwarding"
 
 dev: deploy ## Alias for deploy (use after code changes)
@@ -36,12 +48,16 @@ clean: ## Delete all Kubernetes resources
 	kubectl delete -f k8s/ --ignore-not-found=true && \
 	echo "✓ Resources deleted"
 
-generate-keys: ## Generate RSA key pair for JWT signing
-	@echo "Generating RSA key pair..."; \
-	mkdir -p keys && \
-	openssl genpkey -algorithm RSA -out keys/private.pem -pkeyopt rsa_keygen_bits:2048 && \
-	openssl rsa -pubout -in keys/private.pem -out keys/public.pem && \
-	echo "✓ Keys generated in keys/"
+generate-keys: ## Generate RSA key pair for JWT signing (skips if already exists)
+	@if [ -f keys/private.pem ] && [ -f keys/public.pem ]; then \
+		echo "✓ RSA key pair already exists in keys/, skipping generation"; \
+	else \
+		echo "Generating RSA key pair..."; \
+		mkdir -p keys && \
+		openssl genpkey -algorithm RSA -out keys/private.pem -pkeyopt rsa_keygen_bits:2048 && \
+		openssl rsa -pubout -in keys/private.pem -out keys/public.pem && \
+		echo "✓ Keys generated in keys/"; \
+	fi
 
 apply-keys: ## Create Kubernetes secret from RSA keys
 	@echo "Creating JWT RSA keys secret..."; \

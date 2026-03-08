@@ -9,56 +9,56 @@ import (
 )
 
 type App struct {
-	ID          pgtype.UUID      `json:"id"`
-	Name        string           `json:"name"`
-	Description *string          `json:"description"`
-	CreatedAt   pgtype.Timestamp `json:"created_at"`
-	UpdatedAt   pgtype.Timestamp `json:"updated_at"`
+	ID          pgtype.UUID        `json:"id"`
+	Name        string             `json:"name"`
+	Description *string            `json:"description"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
 type RefreshToken struct {
-	ID        pgtype.UUID      `json:"id"`
-	SessionID pgtype.UUID      `json:"session_id"`
-	UserID    pgtype.UUID      `json:"user_id"`
-	TokenHash string           `json:"token_hash"`
-	Revoked   *bool            `json:"revoked"`
-	ExpiresAt pgtype.Timestamp `json:"expires_at"`
-	CreatedAt pgtype.Timestamp `json:"created_at"`
-	UpdatedAt pgtype.Timestamp `json:"updated_at"`
+	ID        pgtype.UUID        `json:"id"`
+	SessionID pgtype.UUID        `json:"session_id"`
+	UserID    pgtype.UUID        `json:"user_id"`
+	TokenHash string             `json:"token_hash"`
+	Revoked   *bool              `json:"revoked"`
+	ExpiresAt pgtype.Timestamptz `json:"expires_at"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Role struct {
-	ID        pgtype.UUID      `json:"id"`
-	AppID     pgtype.UUID      `json:"app_id"`
-	Name      string           `json:"name"`
-	CreatedAt pgtype.Timestamp `json:"created_at"`
-	UpdatedAt pgtype.Timestamp `json:"updated_at"`
+	ID        pgtype.UUID        `json:"id"`
+	AppID     pgtype.UUID        `json:"app_id"`
+	Name      string             `json:"name"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt pgtype.Timestamptz `json:"updated_at"`
 }
 
 type Session struct {
-	ID         pgtype.UUID      `json:"id"`
-	UserID     pgtype.UUID      `json:"user_id"`
-	DeviceInfo *string          `json:"device_info"`
-	IpAddress  *string          `json:"ip_address"`
-	Revoked    *bool            `json:"revoked"`
-	CreatedAt  pgtype.Timestamp `json:"created_at"`
-	UpdatedAt  pgtype.Timestamp `json:"updated_at"`
-	ExpiresAt  pgtype.Timestamp `json:"expires_at"`
+	ID         pgtype.UUID        `json:"id"`
+	UserID     pgtype.UUID        `json:"user_id"`
+	DeviceInfo *string            `json:"device_info"`
+	IpAddress  *string            `json:"ip_address"`
+	Revoked    *bool              `json:"revoked"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt  pgtype.Timestamptz `json:"updated_at"`
+	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
 }
 
 type User struct {
-	ID            pgtype.UUID      `json:"id"`
-	AppID         pgtype.UUID      `json:"app_id"`
-	Email         string           `json:"email"`
-	PasswordHash  string           `json:"password_hash"`
-	IsActive      *bool            `json:"is_active"`
-	EmailVerified *bool            `json:"email_verified"`
-	CreatedAt     pgtype.Timestamp `json:"created_at"`
-	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
+	ID            pgtype.UUID        `json:"id"`
+	AppID         pgtype.UUID        `json:"app_id"`
+	Email         string             `json:"email"`
+	PasswordHash  string             `json:"password_hash"`
+	IsActive      *bool              `json:"is_active"`
+	EmailVerified *bool              `json:"email_verified"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
 type UserRole struct {
-	UserID     pgtype.UUID      `json:"user_id"`
-	RoleID     pgtype.UUID      `json:"role_id"`
-	AssignedAt pgtype.Timestamp `json:"assigned_at"`
+	UserID     pgtype.UUID        `json:"user_id"`
+	RoleID     pgtype.UUID        `json:"role_id"`
+	AssignedAt pgtype.Timestamptz `json:"assigned_at"`
 }

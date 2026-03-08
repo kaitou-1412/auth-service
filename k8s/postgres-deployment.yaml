@@ -34,6 +34,8 @@ spec:
         env:
         - name: PGDATA
           value: "/var/lib/postgresql/data/pgdata"  # Subpath to avoid permission issues
+        - name: TZ
+          value: "UTC"
 
         # Volume mount for persistent storage
         volumeMounts:

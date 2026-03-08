@@ -1,6 +1,21 @@
 # Auth Service
 
-Authentication service built with Go, running on Kubernetes with PostgreSQL.
+A reusable, multi-tenant authentication service built with Go, running on Kubernetes with PostgreSQL.
+
+## Why This Exists
+
+This service is designed to be deployed once and shared across multiple applications — same code, same image, same pod, same database. Instead of each app rolling its own auth, they all point to this single service.
+
+**How it works:**
+
+- **Apps** are added manually to the database. Each app gets a unique `app_id`.
+- **Users** sign up via the API using their app's `app_id`, so users are scoped per app.
+- **Roles** are added manually per app, based on that app's business logic (e.g., `admin`, `editor`, `viewer`). These roles are included in the JWT access token claims.
+- **Authorization** is handled by each consuming microservice independently. Using the public key, any service can decode the JWT, extract the roles, and check permissions against its own permissions table — no API calls back to this service needed. This enforces clean separation of concerns.
+
+**Local development:**
+
+The project is fully containerized with Kubernetes. No local PostgreSQL install, no environment mismatches — just `minikube start` and `make setup`. Kubernetes handles pod orchestration (database comes up before the app), and the Makefile provides commands to make local development a cakewalk.
 
 ## Prerequisites
 
@@ -207,3 +222,4 @@ make coverage-cli
 - `make deploy` builds the image **inside minikube's Docker daemon** — no `minikube image load` needed
 - Database data persists across pod restarts (PersistentVolume)
 - Port-forwards stop when the pod restarts — re-run `make dev-watch` to restore
+- JWT RSA keys are stored as a Kubernetes Secret (`jwt-rsa-keys`) from local PEM files — this is fine for local dev but for production, use a managed secrets service like AWS Secrets Manager

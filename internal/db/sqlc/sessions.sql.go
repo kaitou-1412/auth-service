@@ -18,10 +18,10 @@ RETURNING id, user_id, device_info, ip_address, revoked, created_at, updated_at,
 `
 
 type CreateSessionParams struct {
-	UserID     pgtype.UUID      `json:"user_id"`
-	DeviceInfo *string          `json:"device_info"`
-	IpAddress  *string          `json:"ip_address"`
-	ExpiresAt  pgtype.Timestamp `json:"expires_at"`
+	UserID     pgtype.UUID        `json:"user_id"`
+	DeviceInfo *string            `json:"device_info"`
+	IpAddress  *string            `json:"ip_address"`
+	ExpiresAt  pgtype.Timestamptz `json:"expires_at"`
 }
 
 func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (Session, error) {

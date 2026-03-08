@@ -86,8 +86,8 @@ type signupResponse struct {
 	Email         string           `json:"email"`
 	IsActive      *bool            `json:"is_active"`
 	EmailVerified *bool            `json:"email_verified"`
-	CreatedAt     pgtype.Timestamp `json:"created_at"`
-	UpdatedAt     pgtype.Timestamp `json:"updated_at"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
 }
 
 // loginRequest is the request body for POST /v1/auth/login

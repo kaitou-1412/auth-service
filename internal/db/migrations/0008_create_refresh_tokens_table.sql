@@ -5,9 +5,9 @@ CREATE TABLE refresh_tokens (
     user_id UUID NOT NULL REFERENCES users(id),
     token_hash TEXT NOT NULL,
     revoked BOOLEAN DEFAULT FALSE,
-    expires_at TIMESTAMP NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TRIGGER update_refresh_tokens_updated_at

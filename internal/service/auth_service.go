@@ -156,13 +156,13 @@ func (s *AuthService) Login(ctx context.Context, params LoginParams) (LoginResul
 		return LoginResult{}, ErrInvalidCredentials
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 
 	session, err := s.queries.CreateSession(ctx, db.CreateSessionParams{
 		UserID:     user.ID,
 		DeviceInfo: params.DeviceInfo,
 		IpAddress:  params.IPAddress,
-		ExpiresAt:  pgtype.Timestamp{Time: now.Add(sessionDuration), Valid: true},
+		ExpiresAt:  pgtype.Timestamptz{Time: now.Add(sessionDuration), Valid: true},
 	})
 	if err != nil {
 		slog.Error("login: failed to create session", "user_id", user.ID, "error", err)
@@ -179,7 +179,7 @@ func (s *AuthService) Login(ctx context.Context, params LoginParams) (LoginResul
 		SessionID: session.ID,
 		UserID:    user.ID,
 		TokenHash: tokenHash,
-		ExpiresAt: pgtype.Timestamp{Time: now.Add(refreshTokenDuration), Valid: true},
+		ExpiresAt: pgtype.Timestamptz{Time: now.Add(refreshTokenDuration), Valid: true},
 	})
 	if err != nil {
 		slog.Error("login: failed to create refresh token", "user_id", user.ID, "error", err)
@@ -244,7 +244,7 @@ func (s *AuthService) RefreshToken(ctx context.Context, rawToken string) (Refres
 		return RefreshTokenResult{}, err
 	}
 
-	now := time.Now()
+	now := time.Now().UTC()
 
 	newRaw, newHash, err := generateRefreshToken()
 	if err != nil {
@@ -256,7 +256,7 @@ func (s *AuthService) RefreshToken(ctx context.Context, rawToken string) (Refres
 		SessionID: session.ID,
 		UserID:    session.UserID,
 		TokenHash: newHash,
-		ExpiresAt: pgtype.Timestamp{Time: now.Add(refreshTokenDuration), Valid: true},
+		ExpiresAt: pgtype.Timestamptz{Time: now.Add(refreshTokenDuration), Valid: true},
 	}); err != nil {
 		slog.Error("token refresh: failed to create new token", "error", err)
 		return RefreshTokenResult{}, err
@@ -398,8 +398,8 @@ type SessionInfo struct {
 	SessionID  string
 	DeviceInfo *string
 	IpAddress  *string
-	CreatedAt  pgtype.Timestamp
-	ExpiresAt  pgtype.Timestamp
+	CreatedAt  pgtype.Timestamptz
+	ExpiresAt  pgtype.Timestamptz
 	Revoked    *bool
 	Current    bool
 }

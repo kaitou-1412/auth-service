@@ -20,9 +20,18 @@ k8s/
 *.yaml
 *.yml
 
+# CI
+.github/
+
+# RSA keys
+keys/
+
 # Documentation
 README.md
+docs/
 CONTEXT.md
+TODO.md
+TASKS.md
 
 # Test files
 *_test.go

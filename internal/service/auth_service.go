@@ -534,10 +534,7 @@ func (s *AuthService) AssignRole(ctx context.Context, params AssignRoleParams) (
 	}
 
 	slog.Info("assign role successful", "user_id", params.UserID, "role_id", params.RoleID)
-	return AssignRoleResult{
-		UserID: params.UserID,
-		RoleID: params.RoleID,
-	}, nil
+	return AssignRoleResult(params), nil
 }
 
 type RemoveRoleParams struct {
@@ -599,10 +596,7 @@ func (s *AuthService) RemoveRole(ctx context.Context, params RemoveRoleParams) (
 	}
 
 	slog.Info("remove role successful", "user_id", params.UserID, "role_id", params.RoleID)
-	return RemoveRoleResult{
-		UserID: params.UserID,
-		RoleID: params.RoleID,
-	}, nil
+	return RemoveRoleResult(params), nil
 }
 
 type RoleInfo struct {

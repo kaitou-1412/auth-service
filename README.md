@@ -75,6 +75,7 @@ make dev-watch
 | `make generate-keys` | Generate RSA key pair for JWT signing                 |
 | `make apply-keys`    | Create/update K8s secret from RSA keys                |
 | `make sqlc-generate` | Run sqlc generate                                     |
+| `make lint`          | Run golangci-lint                                     |
 | `make unit-test`     | Run unit tests                                        |
 | `make coverage`      | Run tests and open HTML coverage in browser           |
 | `make coverage-cli`  | Run tests and browse coverage in terminal             |
@@ -141,6 +142,18 @@ HTTP Request → Middleware → Handler → Service → DB (sqlc + pgx)
 - **Refresh token expiry**: 30 days
 
 Keys are generated locally in `keys/` and mounted into the pod via a Kubernetes Secret (`jwt-rsa-keys`).
+
+## Rate Limiting
+
+Per-IP rate limiting using token bucket algorithm (`golang.org/x/time/rate`), with three tiers:
+
+| Tier | Rate | Burst | Endpoints |
+|------|------|-------|-----------|
+| Strict | 5 req/min | 5 | `/auth/signup`, `/auth/login`, `/auth/password/change` |
+| Moderate | 20 req/min | 10 | `/auth/token/refresh` |
+| Standard | 60 req/min | 20 | All other authenticated endpoints |
+
+`/health` is exempt (used by Kubernetes probes). Rate-limited requests receive a `429 Too Many Requests` response with a `Retry-After` header.
 
 ## Configuration
 
@@ -217,9 +230,19 @@ go install github.com/orlangure/gocovsh@latest
 make coverage-cli
 ```
 
+## CI
+
+GitHub Actions runs on every push to `main`:
+
+1. **Lint** — `golangci-lint` for code quality
+2. **Test** — `go test` with race detector and coverage
+3. **Coverage** — enforces 80% minimum per tested package
+4. **Build** — verifies the binary compiles
+
 ## Notes
 
 - `make deploy` builds the image **inside minikube's Docker daemon** — no `minikube image load` needed
 - Database data persists across pod restarts (PersistentVolume)
 - Port-forwards stop when the pod restarts — re-run `make dev-watch` to restore
 - JWT RSA keys are stored as a Kubernetes Secret (`jwt-rsa-keys`) from local PEM files — this is fine for local dev but for production, use a managed secrets service like AWS Secrets Manager
+- The server handles graceful shutdown (SIGINT/SIGTERM) — in-flight requests get 10 seconds to complete before the server stops, and all resources (DB pool, rate limiter goroutines) are cleaned up

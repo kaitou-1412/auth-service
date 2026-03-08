@@ -39,7 +39,7 @@ func TestAuthMiddleware(t *testing.T) {
 	nextHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		userID := middleware.UserIDFromContext(r.Context())
 		sessionID := middleware.SessionIDFromContext(r.Context())
-		json.NewEncoder(w).Encode(map[string]string{
+		_ = json.NewEncoder(w).Encode(map[string]string{
 			"user_id":    userID,
 			"session_id": sessionID,
 		})

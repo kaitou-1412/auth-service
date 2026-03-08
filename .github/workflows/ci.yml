@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Lint
+        uses: golangci-lint/golangci-lint-action@v7
+        with:
+          version: latest
+
+      - name: Test
+        run: go test ./... -race -cover -coverprofile=coverage.out | tee test-output.txt
+
+      - name: Check coverage
+        run: |
+          FAILED=0
+          while read -r LINE; do
+            PKG=$(echo "$LINE" | awk '{print $2}')
+            COV=$(echo "$LINE" | grep -oE '[0-9]+\.[0-9]+%' | tr -d '%')
+            echo "$PKG: ${COV}%"
+            if [ "$(echo "$COV < 80.0" | bc)" -eq 1 ]; then
+              echo "  FAIL: below 80% threshold"
+              FAILED=1
+            fi
+          done < <(grep '^ok' test-output.txt)
+          if [ "$FAILED" -eq 1 ]; then
+            exit 1
+          fi
+
+      - name: Build
+        run: go build ./...

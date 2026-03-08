@@ -1,6 +1,6 @@
 # Makefile for Auth Service Development
 
-.PHONY: help build restart restart-all deploy dev clean logs status test unit-test coverage port-forward port-forward-bg port-forward-db-bg stop-port-forward dev-watch describe shell db-shell minikube-status minikube-dashboard generate-keys apply-keys sqlc-generate
+.PHONY: help build restart restart-all deploy dev clean logs status test unit-test lint coverage port-forward port-forward-bg port-forward-db-bg stop-port-forward dev-watch describe shell db-shell minikube-status minikube-dashboard generate-keys apply-keys sqlc-generate
 
 # Variables
 IMAGE_NAME := auth-service
@@ -112,6 +112,10 @@ test: ## Test the health endpoint
 	@echo "Testing health endpoint..."; \
 	curl -s http://localhost:8080/v1/health || echo "Error: Make sure port-forward is running (make port-forward)"
 
+lint: ## Run golangci-lint
+	@echo "Running linter..."; \
+	golangci-lint run ./...
+
 unit-test: ## Run unit tests
 	@echo "Running unit tests..."; \
 	go test -v ./...
@@ -123,7 +127,32 @@ coverage: ## Run unit tests and open HTML coverage report in browser
 
 coverage-cli: ## Run unit tests and browse coverage in terminal (requires: go install github.com/orlangure/gocovsh@latest)
 	@echo "Running tests with coverage..."; \
-	go test ./... -coverprofile=coverage.out && \
+	go test ./... -cover -coverprofile=coverage.out | tee /tmp/auth-coverage.txt && \
+	echo "" && \
+	echo "=== Skipped (no test files) ===" && \
+	grep '^\?' /tmp/auth-coverage.txt | awk '{print "  " $$2}' && \
+	grep 'coverage: 0.0%' /tmp/auth-coverage.txt | awk '{print "  " $$1}' && \
+	echo "" && \
+	echo "=== Per-package coverage (threshold: 80%) ===" && \
+	FAILED=0; \
+	for LINE in $$(grep '^ok' /tmp/auth-coverage.txt | awk '{print $$2 ":" $$5}'); do \
+		PKG=$${LINE%%:*}; \
+		COV=$${LINE##*:}; \
+		COV_NUM=$${COV%\%}; \
+		if [ "$$(echo "$$COV_NUM < 80.0" | bc)" -eq 1 ]; then \
+			echo "  FAIL $$PKG $$COV"; \
+			FAILED=1; \
+		else \
+			echo "  PASS $$PKG $$COV"; \
+		fi; \
+	done; \
+	echo ""; \
+	if [ "$$FAILED" -eq 1 ]; then \
+		echo "Some packages are below 80% threshold"; \
+	else \
+		echo "All packages above 80% threshold"; \
+	fi; \
+	echo "" && \
 	gocovsh
 
 port-forward: ## Forward service to localhost:8080 (blocking)

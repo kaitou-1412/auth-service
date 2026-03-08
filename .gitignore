@@ -15,7 +15,7 @@
 keys/
 
 # Test coverage
-coverage.out
+*.out
 
 # Kubernetes secrets (use sample files instead)
 k8s/configmap.yaml
